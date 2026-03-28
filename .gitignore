@@ -15,4 +15,4 @@ data/
 dist/
 coverage/
 *.swp
-
+*.tsbuildinfo
