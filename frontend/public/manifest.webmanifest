@@ -1,0 +1,19 @@
+{
+  "name": "BrainSession",
+  "short_name": "BrainSession",
+  "description": "Voice-first note capture with summaries and follow-up questions.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#0e1017",
+  "theme_color": "#0e1017",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
+

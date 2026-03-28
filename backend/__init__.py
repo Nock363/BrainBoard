@@ -1,0 +1,2 @@
+"""BrainSession PWA backend."""
+
