@@ -4,4 +4,4 @@ python-multipart>=0.0.20,<1.0
 python-dotenv>=1.0,<2.0
 requests>=2.32,<3.0
 pydantic>=2.10,<3.0
-
+cryptography>=44.0,<46.0

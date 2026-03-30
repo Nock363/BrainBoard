@@ -1,4 +1,4 @@
-export type TabKey = 'capture' | 'notes' | 'settings'
+export type TabKey = 'capture' | 'live' | 'notes' | 'settings'
 
 export interface NoteSummarySections {
   todos: string[]
@@ -63,4 +63,3 @@ export interface ReportResponse {
   reportMarkdown: string
   fileName: string
 }
-

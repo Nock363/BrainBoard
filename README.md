@@ -11,6 +11,7 @@ Standalone BrainSession web/PWA replacement with:
 - delete confirmations and loading overlays
 - durable persistence in SQLite + filesystem audio storage
 - PWA install support for iPhone/iOS
+- installable HTTPS deployment for Android/iPhone
 
 ## Layout
 
@@ -18,6 +19,7 @@ Standalone BrainSession web/PWA replacement with:
 - `frontend/` React + Vite PWA
 - `data/` runtime storage for SQLite, settings, and audio files
 - `deploy/brainsession-pwa.service` systemd user service example
+- `deploy/brainsession-pwa-https.service` HTTPS/systemd example with trusted-certificate fallback
 
 ## Local setup
 
@@ -54,6 +56,40 @@ cd ..
 ```
 
 The app serves on `http://localhost:8000`.
+
+## HTTPS install mode
+
+To make the app installable as a real PWA on Android and iPhone, start it through the HTTPS launcher:
+
+```bash
+./scripts/start-https.sh
+```
+
+The script tries the preferred Tailscale certificate path first. If local Tailscale cert issuance is allowed, it serves the app directly at:
+
+```text
+https://nixos.tail615dad.ts.net:8443
+```
+
+If Tailscale cert access is blocked, it automatically falls back to a trusted Cloudflare Quick Tunnel and prints the generated `https://...trycloudflare.com` URL in the terminal.
+
+For a persistent service, install `deploy/brainsession-pwa-https.service` as a `systemd --user` unit instead of the HTTP-only unit.
+
+On Android, open the HTTPS URL in Chrome and use the install prompt or menu item. On iPhone, open the same URL in Safari and use Share → Add to Home Screen.
+
+## Local trusted test certificate
+
+If you want a certificate that behaves like a real trusted HTTPS site for device testing, use the local CA launcher:
+
+```bash
+./scripts/start-local-https.sh
+```
+
+This creates a local root CA and a server certificate under `data/tls/local-test/`, then serves the app on `https://<your-laptop-ip>:8443`.
+
+To trust it on Android, copy `data/tls/local-test/root-ca.crt` to the phone and install it as a CA certificate in Android settings. Then open the printed `https://...:8443` URL in Chrome and allow the microphone permission once.
+
+If the script detects the wrong IP, set `BRAINSESSION_HTTPS_IPS=192.168.1.23` (or your current laptop IP) before starting it again.
 
 ## Dev mode
 
@@ -102,8 +138,11 @@ If Serve is disabled on the tailnet, enable it from the admin prompt Tailscale p
 
 Once enabled, open the generated `https://<machine>.<tailnet>.ts.net` URL on iPhone/iOS.
 
+If local cert issuance is permitted, `scripts/start-https.sh` uses a trusted Tailscale certificate directly and bypasses Serve/Funnel entirely.
+
 ## Notes
 
 - Voice transcription uses the browser microphone and uploads audio only after recording stops.
 - Audio files are stored under `data/media/notes/...`.
 - API key and model settings are stored on the server side in `data/settings.json`.
+- Microphone recording only works in a secure context, so use `https://...` or `http://localhost` in Chrome.

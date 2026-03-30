@@ -657,15 +657,26 @@ if config.frontend_dist_dir.exists():
 def main() -> None:
     import uvicorn
 
+    ssl_certfile = os.getenv("SSL_CERTFILE", "").strip() or None
+    ssl_keyfile = os.getenv("SSL_KEYFILE", "").strip() or None
+    ssl_kwargs: dict[str, object] = {}
+    if ssl_certfile and ssl_keyfile:
+        ssl_kwargs = {
+            "ssl_certfile": ssl_certfile,
+            "ssl_keyfile": ssl_keyfile,
+        }
+
     uvicorn.run(
         "backend.main:app",
         host=os.getenv("HOST", "0.0.0.0"),
         port=config.port,
         reload=os.getenv("UVICORN_RELOAD", "0") == "1",
         log_level="info",
+        proxy_headers=True,
+        forwarded_allow_ips="*",
+        **ssl_kwargs,
     )
 
 
 if __name__ == "__main__":
     main()
-

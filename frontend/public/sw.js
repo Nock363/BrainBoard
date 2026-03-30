@@ -1,5 +1,5 @@
-const CACHE_NAME = 'brainsession-pwa-v1'
-const APP_SHELL = ['/', '/manifest.webmanifest', '/icon.svg']
+const CACHE_NAME = 'brainsession-pwa-v2'
+const APP_SHELL = ['/', '/manifest.webmanifest', '/icon.svg', '/icon-192.png', '/icon-512.png', '/apple-touch-icon.png']
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
@@ -48,4 +48,3 @@ self.addEventListener('fetch', (event) => {
       }),
   )
 })
-

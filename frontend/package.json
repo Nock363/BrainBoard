@@ -9,6 +9,8 @@
     "preview": "vite preview --host 0.0.0.0 --port 4173"
   },
   "dependencies": {
+    "bootstrap": "^5.3.3",
+    "bootstrap-icons": "^1.13.1",
     "react": "^19.1.0",
     "react-dom": "^19.1.0"
   },
@@ -20,4 +22,3 @@
     "vite": "^7.1.2"
   }
 }
-

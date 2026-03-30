@@ -19,6 +19,7 @@ export function useVoiceRecorder() {
   const [isRecording, setIsRecording] = useState(false)
   const [levels, setLevels] = useState<number[]>([])
   const [error, setError] = useState('')
+  const [microphoneHint, setMicrophoneHint] = useState('')
   const streamRef = useRef<MediaStream | null>(null)
   const recorderRef = useRef<MediaRecorder | null>(null)
   const chunksRef = useRef<BlobPart[]>([])
@@ -28,6 +29,56 @@ export function useVoiceRecorder() {
   const animationRef = useRef<number | null>(null)
   const analyserRef = useRef<AnalyserNode | null>(null)
   const historyRef = useRef<number[]>([])
+
+  useEffect(() => {
+    let cancelled = false
+
+    const inspectMicrophoneAvailability = async () => {
+      if (typeof window === 'undefined') {
+        return
+      }
+      if (!window.isSecureContext) {
+        if (!cancelled) {
+          setMicrophoneHint('Mikrofonzugriff braucht HTTPS oder localhost. Öffne die installierte HTTPS-URL statt der HTTP-Version.')
+        }
+        return
+      }
+      if (!navigator.mediaDevices?.getUserMedia) {
+        if (!cancelled) {
+          setMicrophoneHint('Dieser Browser unterstützt keine Mikrofonaufnahme.')
+        }
+        return
+      }
+      if (!navigator.permissions?.query) {
+        if (!cancelled) {
+          setMicrophoneHint('Browser-Berechtigungen können nicht vorab geprüft werden. Tippe auf Aufnahme, um die Anfrage auszulösen.')
+        }
+        return
+      }
+
+      try {
+        const permission = await navigator.permissions.query({ name: 'microphone' as PermissionName })
+        if (cancelled) {
+          return
+        }
+        if (permission.state === 'denied') {
+          setMicrophoneHint('Mikrofonzugriff ist im Browser blockiert. Bitte in den Website-Berechtigungen von Chrome erlauben.')
+        } else {
+          setMicrophoneHint('')
+        }
+      } catch {
+        if (!cancelled) {
+          setMicrophoneHint('')
+        }
+      }
+    }
+
+    void inspectMicrophoneAvailability()
+
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   const stopMeter = useCallback(() => {
     if (animationRef.current !== null) {
@@ -84,6 +135,9 @@ export function useVoiceRecorder() {
     if (isRecording) {
       return
     }
+    if (microphoneHint) {
+      throw new Error(microphoneHint)
+    }
     if (!navigator.mediaDevices?.getUserMedia) {
       throw new Error('Aufnahme wird von diesem Browser nicht unterstützt')
     }
@@ -126,7 +180,7 @@ export function useVoiceRecorder() {
 
     recorder.start()
     setIsRecording(true)
-  }, [cleanup, isRecording, startMeter])
+  }, [cleanup, isRecording, microphoneHint, startMeter])
 
   const stopRecording = useCallback(async () => {
     const recorder = recorderRef.current
@@ -160,6 +214,7 @@ export function useVoiceRecorder() {
     isRecording,
     levels,
     error,
+    microphoneHint,
     setError,
     startRecording,
     stopRecording,
