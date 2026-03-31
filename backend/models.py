@@ -65,6 +65,10 @@ class ToggleTodoRequest(BaseModel):
     checked: bool
 
 
+class UpdateNoteCategoryRequest(BaseModel):
+    category: Literal["", "Idea", "Task"]
+
+
 class CreateVoiceNoteResponse(BaseModel):
     note: NoteNode
 

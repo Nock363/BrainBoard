@@ -31,6 +31,7 @@ from backend.models import (
     ReportResponse,
     RoutineResponse,
     SettingsResponse,
+    UpdateNoteCategoryRequest,
     UpdateSettingsRequest,
 )
 from backend.storage import BrainSessionStore
@@ -121,6 +122,12 @@ def resolve_note_category(note: dict[str, object]) -> str:
         return ""
     inferred = infer_local_interpretation(seed_text).get("category", "")
     return inferred if inferred in {"Idea", "Task"} else guess_note_category(seed_text)
+
+
+def validate_note_category(category: str) -> str:
+    if category in {"", "Idea", "Task"}:
+        return category
+    raise ValueError("Ungültige Klasse")
 
 
 def file_extension_for_upload(upload: UploadFile) -> str:
@@ -533,6 +540,20 @@ def regenerate_summary(note_id: str) -> NoteResponse:
 @app.post("/api/notes/{note_id}/analyze", response_model=NoteResponse)
 def analyze_note(note_id: str) -> NoteResponse:
     return regenerate_summary(note_id)
+
+
+@app.put("/api/notes/{note_id}/category", response_model=NoteResponse)
+def update_note_category(note_id: str, payload: UpdateNoteCategoryRequest) -> NoteResponse:
+    note = store.get_note(note_id)
+    if note is None:
+        raise HTTPException(status_code=404, detail="Note nicht gefunden")
+    try:
+        note["category"] = validate_note_category(payload.category)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    note["updatedAt"] = utc_now()
+    store.save_note(note)
+    return NoteResponse(note=note_to_model(note, lambda rel: f"/media/{rel}"))
 
 
 @app.post("/api/routines/reanalyze-notes", response_model=RoutineResponse)

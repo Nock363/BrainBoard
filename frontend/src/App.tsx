@@ -362,14 +362,6 @@ export default function App() {
     openNoteDetail(note.id)
   }
 
-  const analyzeSelectedNote = async () => {
-    if (!selectedNote) {
-      return
-    }
-    const response = await runBusy('Post-it wird analysiert …', async () => api.analyzeNote(selectedNote.id))
-    await updateNotesFromResponse(response)
-  }
-
   const runAllNotesRoutine = async () => {
     const response = await runBusy('Alle Notizen werden neu analysiert …', async () => api.reanalyzeAllNotes())
     await reloadNotes()
@@ -384,6 +376,14 @@ export default function App() {
     setDeleteNoteTarget(null)
     closeNoteDetail()
     await reloadNotes()
+  }
+
+  const changeSelectedNoteCategory = async (category: NoteCategory) => {
+    if (!selectedNote) {
+      return
+    }
+    const response = await runBusy('Klasse wird geändert …', async () => api.updateNoteCategory(selectedNote.id, category))
+    await updateNotesFromResponse(response)
   }
 
   const deleteAllNotes = async () => {
@@ -458,7 +458,12 @@ export default function App() {
   }
 
   const activateTab = (tab: TabKey) => {
-    pushAppState(tab, selectedNoteId)
+    if (selectedNoteId) {
+      pushAppState(tab, '')
+      setSelectedNoteId('')
+    } else {
+      pushAppState(tab, selectedNoteId)
+    }
     setActiveTab(tab)
     scrollToTab(tab)
   }
@@ -503,41 +508,49 @@ export default function App() {
         </header>
 
         <main className="flex-grow-1 overflow-hidden pt-0 pb-0">
-          <div className="page-slider h-100" ref={pageSliderRef} onScroll={handlePageScroll}>
-            <section className="page-panel h-100 d-flex flex-column gap-3">
-              <SparkView
-                startVoiceCapture={() => void startVoiceCapture()}
-                isRecording={recorder.isRecording}
-                startEnabled={captureStartEnabled}
-                microphoneHint={recorder.microphoneHint}
-                onOpenTextNote={() => setTextNoteOpen(true)}
-                onOpenInbox={() => activateTab('inbox')}
-                onOpenBoard={() => activateTab('board')}
-                noteCount={noteCount}
-              />
-            </section>
+          {selectedNote ? (
+            <NoteDetailPage
+              note={selectedNote}
+              onClose={closeNoteDetail}
+              onDeleteNote={() => setDeleteNoteTarget(selectedNote)}
+              onChangeCategory={(category) => void changeSelectedNoteCategory(category)}
+            />
+          ) : (
+            <div className="page-slider h-100" ref={pageSliderRef} onScroll={handlePageScroll}>
+              <section className="page-panel h-100 d-flex flex-column gap-3">
+                <SparkView
+                  startVoiceCapture={() => void startVoiceCapture()}
+                  isRecording={recorder.isRecording}
+                  startEnabled={captureStartEnabled}
+                  microphoneHint={recorder.microphoneHint}
+                  onOpenTextNote={() => setTextNoteOpen(true)}
+                  onOpenInbox={() => activateTab('inbox')}
+                  onOpenBoard={() => activateTab('board')}
+                  noteCount={noteCount}
+                />
+              </section>
 
-            <section className="page-panel h-100 d-flex flex-column gap-3">
+              <section className="page-panel h-100 d-flex flex-column gap-3">
               <InboxView
                 notes={notes}
                 selectedNoteId={selectedNoteId}
                 onOpenNote={openNoteDetail}
-                onDeleteNote={(note) => setDeleteNoteTarget(note)}
                 onTogglePlayback={(id, url) => void playAudio(id, url)}
                 currentlyPlayingId={playingId}
               />
             </section>
 
-            <section className="page-panel h-100 d-flex flex-column gap-3">
-              <BoardView
-                columns={boardColumns}
-                selectedNoteId={selectedNoteId}
-                onOpenNote={openNoteDetail}
-                onTogglePlayback={(id, url) => void playAudio(id, url)}
-                currentlyPlayingId={playingId}
-              />
-            </section>
-          </div>
+              <section className="page-panel h-100 d-flex flex-column gap-3">
+                <BoardView
+                  columns={boardColumns}
+                  selectedNoteId={selectedNoteId}
+                  onOpenNote={openNoteDetail}
+                  onTogglePlayback={(id, url) => void playAudio(id, url)}
+                  currentlyPlayingId={playingId}
+                />
+              </section>
+            </div>
+          )}
         </main>
 
         <nav className="navbar navbar-expand fixed-bottom border-top bg-white shadow-sm app-bottom-nav" aria-label="Seitennavigation">
@@ -571,15 +584,6 @@ export default function App() {
             onSubmit={() => void submitTextNote()}
             onClose={() => setTextNoteOpen(false)}
             submitting={busy !== null}
-          />
-        )}
-
-        {selectedNote && (
-          <NoteDetailModal
-            note={selectedNote}
-            onClose={closeNoteDetail}
-            onDeleteNote={() => setDeleteNoteTarget(selectedNote)}
-            onAnalyzeNote={() => void analyzeSelectedNote()}
           />
         )}
 
@@ -699,7 +703,6 @@ function InboxView(props: {
   notes: NoteNode[]
   selectedNoteId: string
   onOpenNote: (noteId: string) => void
-  onDeleteNote: (note: NoteNode) => void
   onTogglePlayback: (id: string, url: string) => void
   currentlyPlayingId: string
 }) {
@@ -714,7 +717,7 @@ function InboxView(props: {
             </div>
             <span className="badge rounded-pill text-bg-light border text-secondary">{props.notes.length}</span>
           </div>
-          <p className="text-secondary mb-0">Super clean, direkt lesbar und ohne Transkript oder Audio-Details im Kärtchen selbst.</p>
+          <p className="text-secondary mb-0">Jedes Post-it zeigt nur die Zusammenfassung und zwei Aktionen: Audio und Transkript.</p>
         </div>
       </div>
 
@@ -729,7 +732,6 @@ function InboxView(props: {
               selected={props.selectedNoteId === note.id}
               compact={false}
               onOpen={() => props.onOpenNote(note.id)}
-              onDelete={() => props.onDeleteNote(note)}
               onTogglePlayback={() => {
                 const audioPath = noteAudioPath(note)
                 if (audioPath) {
@@ -765,7 +767,7 @@ function BoardView(props: {
             </div>
             <span className="badge rounded-pill text-bg-light border text-secondary">{props.columns.reduce((count, column) => count + column.notes.length, 0)}</span>
           </div>
-          <p className="text-secondary mb-0">Ideen und To-Dos landen farblich sauber sortiert. Alles andere bleibt weiß und ruhig.</p>
+          <p className="text-secondary mb-0">Die Karten bleiben bewusst minimal: Summary plus Audio und Transkript.</p>
         </div>
       </div>
 
@@ -821,7 +823,6 @@ function BoardColumnView(props: {
                 selected={props.selectedNoteId === note.id}
                 compact
                 onOpen={() => props.onOpenNote(note.id)}
-                onDelete={() => undefined}
                 onTogglePlayback={() => {
                   const audioPath = noteAudioPath(note)
                   if (audioPath) {
@@ -843,13 +844,13 @@ function StickyNoteCard(props: {
   selected: boolean
   compact: boolean
   onOpen: () => void
-  onDelete: () => void
   onTogglePlayback: () => void
   playing: boolean
 }) {
-  const category = props.note.category
   const summary = noteSummary(props.note)
-  const noteClasses = ['sticky-note-card', categoryThemeClass(category), props.compact ? 'sticky-note-card-compact' : '', props.selected ? 'selected' : '']
+  const hasAudio = Boolean(noteAudioPath(props.note))
+  const hasTranscript = Boolean(safeText(props.note.rawTranscript).trim())
+  const noteClasses = ['sticky-note-card', categoryThemeClass(props.note.category), props.compact ? 'sticky-note-card-compact' : '', props.selected ? 'selected' : '']
     .filter(Boolean)
     .join(' ')
 
@@ -860,42 +861,91 @@ function StickyNoteCard(props: {
         props.onOpen()
       }
     }}>
-      <div className="sticky-note-top d-flex align-items-start justify-content-between gap-2">
-        <div>
-          <div className="sticky-note-date">{formatRelativeDate(props.note.updatedAt)}</div>
-          <h3 className="sticky-note-title mb-0">{noteTitle(props.note)}</h3>
-        </div>
-        <span className={`badge rounded-pill ${category ? 'text-bg-light border text-secondary' : 'bg-white border text-secondary'}`}>{categoryLabel(category)}</span>
-      </div>
-
+      <div className="sticky-note-kind text-uppercase small fw-semibold">{categoryLabel(props.note.category)}</div>
       <p className="sticky-note-summary mb-0">{summary}</p>
+
+      <div className="sticky-note-actions d-flex gap-2 mt-3">
+        <button
+          className="btn btn-sm btn-light flex-grow-1 sticky-note-action-button"
+          onClick={(event) => {
+            event.stopPropagation()
+            if (hasAudio) {
+              props.onTogglePlayback()
+            }
+          }}
+          type="button"
+          disabled={!hasAudio}
+          aria-label={hasAudio ? (props.playing ? 'Audio anhalten' : 'Audio abspielen') : 'Keine Audio verfügbar'}
+        >
+          <i className={`bi ${props.playing ? 'bi-pause-fill' : 'bi-play-fill'} me-1`} aria-hidden="true" />
+          {hasAudio ? (props.playing ? 'Pause' : 'Audio') : 'Keine Audio'}
+        </button>
+
+        <button
+          className="btn btn-sm btn-outline-light flex-grow-1 sticky-note-action-button"
+          onClick={(event) => {
+            event.stopPropagation()
+            if (hasTranscript) {
+              props.onOpen()
+            }
+          }}
+          type="button"
+          disabled={!hasTranscript}
+          aria-label={hasTranscript ? 'Rohes Transkript anzeigen' : 'Kein Transkript verfügbar'}
+        >
+          <i className="bi bi-file-text me-1" aria-hidden="true" />
+          Transkript
+        </button>
+      </div>
     </article>
   )
 }
 
-function NoteDetailModal(props: {
+function NoteDetailPage(props: {
   note: NoteNode
   onClose: () => void
   onDeleteNote: () => void
-  onAnalyzeNote: () => void
+  onChangeCategory: (category: NoteCategory) => void
 }) {
   const note = props.note
+  const [categoryDraft, setCategoryDraft] = useState<NoteCategory>(note.category)
+
+  useEffect(() => {
+    setCategoryDraft(note.category)
+  }, [note.category, note.id])
+
   return (
-    <div className="overlay-backdrop overlay-dark note-detail-backdrop" onClick={props.onClose}>
-      <div className="note-detail-panel modal-panel" onClick={(event) => event.stopPropagation()}>
-        <div className="detail-header d-flex align-items-start justify-content-between gap-3">
+    <section className="note-detail-page h-100 d-flex flex-column gap-3">
+      <div className="card border-0 shadow-sm">
+        <div className="card-body p-3 p-lg-4 d-flex flex-column flex-lg-row align-items-start justify-content-between gap-3">
           <div>
-            <div className="d-flex flex-wrap gap-2 mb-2">
-              <span className="badge rounded-pill text-bg-light border text-secondary">{categoryLabel(note.category)}</span>
-              <span className="badge rounded-pill text-bg-light border text-secondary">{formatRelativeDate(note.updatedAt)}</span>
-            </div>
-            <h2 className="h3 mb-1">{noteTitle(note)}</h2>
-            <p className="text-secondary mb-0">Nur Zusammenfassung und Typ bleiben sichtbar.</p>
+            <p className="small text-uppercase text-secondary fw-semibold mb-1">Notiz</p>
+            <h2 className="h3 mb-1">Zusammenfassung</h2>
+            <p className="text-secondary mb-0">Die Seite zeigt nur noch das Wesentliche.</p>
           </div>
-          <div className="d-flex flex-wrap gap-2 justify-content-end">
+          <div className="d-flex flex-column flex-sm-row flex-wrap align-items-sm-end gap-2 justify-content-end">
+            <div className="d-flex flex-column gap-1">
+              <label className="form-label small text-uppercase text-secondary fw-semibold mb-0" htmlFor="note-category-select">
+                Klasse ändern
+              </label>
+              <select
+                id="note-category-select"
+                className="form-select form-select-sm"
+                value={categoryDraft}
+                onChange={(event) => {
+                  const nextCategory = event.target.value as NoteCategory
+                  setCategoryDraft(nextCategory)
+                  props.onChangeCategory(nextCategory)
+                }}
+              >
+                <option value="">Keins davon</option>
+                <option value="Idea">Idee</option>
+                <option value="Task">To-Do</option>
+              </select>
+            </div>
             <button className="btn btn-outline-secondary btn-sm" onClick={props.onClose} type="button">
-              <i className="bi bi-x-lg me-1" aria-hidden="true" />
-              Schließen
+              <i className="bi bi-arrow-left me-1" aria-hidden="true" />
+              Zurück
             </button>
             <button className="btn btn-outline-danger btn-sm" onClick={props.onDeleteNote} type="button">
               <i className="bi bi-trash3-fill me-1" aria-hidden="true" />
@@ -903,30 +953,23 @@ function NoteDetailModal(props: {
             </button>
           </div>
         </div>
-
-        <div className="detail-body vstack gap-3">
-          <div className={`sticky-note-card ${categoryThemeClass(note.category)} detail-sticky-note`}>
-            <div className="d-flex align-items-start justify-content-between gap-2 mb-3">
-              <div>
-                <div className="sticky-note-date">Gesamtübersicht</div>
-                <h3 className="sticky-note-title mb-0">{note.summaryHeadline || note.title || 'Neue Notiz'}</h3>
-              </div>
-              <button className="btn btn-sm btn-outline-primary" onClick={props.onAnalyzeNote} type="button">
-                <i className="bi bi-stars me-1" aria-hidden="true" />
-                Analysieren
-              </button>
-            </div>
-            <p className="sticky-note-summary mb-0">{note.summary || 'Noch keine Zusammenfassung vorhanden.'}</p>
-          </div>
-
-          <div className="note-detail-footer d-flex justify-content-end">
-            <button className="btn btn-outline-secondary" onClick={props.onClose} type="button">
-              Schließen
-            </button>
-          </div>
-        </div>
       </div>
-    </div>
+
+      <div className="note-detail-scroll vstack gap-3 flex-grow-1 overflow-auto pb-2">
+        <article className={`sticky-note-card ${categoryThemeClass(note.category)} detail-sticky-note`}>
+          <p className="sticky-note-summary mb-0">{note.summary || 'Noch keine Zusammenfassung vorhanden.'}</p>
+        </article>
+
+        {note.rawTranscript ? (
+          <article className="card border-0 shadow-sm">
+            <div className="card-body p-3 p-lg-4 vstack gap-2">
+              <h3 className="h5 mb-0">Transkript</h3>
+              <div className="transcript-box mt-1">{note.rawTranscript}</div>
+            </div>
+          </article>
+        ) : null}
+      </div>
+    </section>
   )
 }
 
