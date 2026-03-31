@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import mimetypes
 import os
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
@@ -13,11 +14,9 @@ from fastapi.responses import HTMLResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from backend.ai import (
-    generate_follow_up_question,
     infer_local_interpretation,
-    infer_tags,
+    classify_note_category,
     interpret_text_note,
-    normalize_question_key,
     summarize_note_timeline,
     transcribe_audio,
 )
@@ -25,15 +24,13 @@ from backend.config import get_config
 from backend.models import (
     AppendTextRequest,
     CreateTextNoteRequest,
-    DismissFollowUpRequest,
     NoteNode,
     NoteResponse,
     NotesResponse,
-    NoteSummarySections,
     NoteTimelineEntry,
     ReportResponse,
+    RoutineResponse,
     SettingsResponse,
-    ToggleTodoRequest,
     UpdateSettingsRequest,
 )
 from backend.storage import BrainSessionStore
@@ -49,6 +46,81 @@ def make_note_id() -> str:
 
 def make_entry_id() -> str:
     return f"entry_{uuid4().hex[:12]}"
+
+
+def clean_text_value(value: object) -> str:
+    if value is None:
+        return ""
+    text = str(value).strip()
+    if text.lower() in {"none", "null"}:
+        return ""
+    return text
+
+
+def guess_note_category(text: str) -> str:
+    lowered = clean_text_value(text).lower()
+    if not lowered:
+        return ""
+
+    idea_patterns = (
+        r"\bidee\b",
+        r"\bkonzept\b",
+        r"\bvorschlag\b",
+        r"\bbrainstorm\b",
+        r"\bvorstellung\b",
+        r"\bkönnte\b",
+        r"\bkoennte\b",
+        r"\bwäre\b",
+        r"\bwaere\b",
+        r"\bgedanke\b",
+        r"\bstory\b",
+    )
+    task_patterns = (
+        r"\baufgabe\b",
+        r"\bto[- ]?do\b",
+        r"\berledigen\b",
+        r"\bmuss\b",
+        r"\bsoll\b",
+        r"\bbitte\b",
+        r"\bdeadline\b",
+        r"\btermin\b",
+    )
+    if any(re.search(pattern, lowered, re.IGNORECASE) for pattern in idea_patterns):
+        return "Idea"
+    if any(re.search(pattern, lowered, re.IGNORECASE) for pattern in task_patterns):
+        return "Task"
+    return ""
+
+
+def resolve_note_category(note: dict[str, object]) -> str:
+    category = clean_text_value(note.get("category"))
+    if category in {"Idea", "Task"}:
+        return category
+
+    title = clean_text_value(note.get("title"))
+    summary_headline = clean_text_value(note.get("summaryHeadline"))
+    summary = clean_text_value(note.get("summary"))
+    raw_transcript = clean_text_value(note.get("rawTranscript"))
+
+    for seed_text in (title, summary_headline, summary, raw_transcript):
+        guessed = guess_note_category(seed_text)
+        if guessed:
+            return guessed
+
+    seed_text = " ".join(
+        part
+        for part in (
+            title,
+            summary_headline,
+            summary,
+            raw_transcript,
+        )
+        if part
+    )
+    if not seed_text:
+        return ""
+    inferred = infer_local_interpretation(seed_text).get("category", "")
+    return inferred if inferred in {"Idea", "Task"} else guess_note_category(seed_text)
 
 
 def file_extension_for_upload(upload: UploadFile) -> str:
@@ -78,34 +150,17 @@ def note_to_model(note: dict[str, object], media_url_fn) -> NoteNode:
         for entry in note.get("entries", [])
         if isinstance(entry, dict)
     ]
-    summary_sections = note.get("summarySections", {}) if isinstance(note.get("summarySections", {}), dict) else {}
-    reviews = note.get("followUpQuestionReviews", [])
     return NoteNode(
         id=str(note.get("id", "")),
-        title=str(note.get("title", "")),
-        summary=str(note.get("summary", "")),
-        rawTranscript=str(note.get("rawTranscript", "")),
-        bullets=[str(item) for item in note.get("bullets", []) if str(item).strip()],
-        tags=[str(item) for item in note.get("tags", []) if str(item).strip()],
-        summarySections=NoteSummarySections(
-            todos=[str(item) for item in summary_sections.get("todos", []) if str(item).strip()],
-            todoStates=[bool(item) for item in summary_sections.get("todoStates", [])],
-            milestones=[str(item) for item in summary_sections.get("milestones", []) if str(item).strip()],
-            questions=[str(item) for item in summary_sections.get("questions", []) if str(item).strip()],
-        ),
-        followUpQuestionReviews=[
-            {
-                "question": str(review.get("question", "")),
-                "reason": str(review.get("reason", "")),
-                "createdAt": str(review.get("createdAt", "")),
-            }
-            for review in reviews
-            if isinstance(review, dict)
-        ],
-        audioRelativePath=str(note.get("audioRelativePath", "")),
+        title=clean_text_value(note.get("title")),
+        summaryHeadline=clean_text_value(note.get("summaryHeadline")) or clean_text_value(note.get("title")),
+        summary=clean_text_value(note.get("summary")),
+        rawTranscript=clean_text_value(note.get("rawTranscript")),
+        category=resolve_note_category(note),
+        audioRelativePath=clean_text_value(note.get("audioRelativePath")),
         entries=entries,
-        createdAt=str(note.get("createdAt", "")),
-        updatedAt=str(note.get("updatedAt", "")),
+        createdAt=clean_text_value(note.get("createdAt")),
+        updatedAt=clean_text_value(note.get("updatedAt")),
     )
 
 
@@ -134,7 +189,8 @@ def build_note_from_text(
     transcription_state: str = "done",
     transcription_error: str = "",
 ) -> dict[str, object]:
-    interpretation = interpret_text_note(api_key, summary_model, text)
+    guessed_category = guess_note_category(text)
+    summary_result = interpret_text_note(api_key, summary_model, text)
     note_id = make_note_id()
     entry_id = make_entry_id()
     now = utc_now()
@@ -148,21 +204,23 @@ def build_note_from_text(
         "createdAt": now,
         "updatedAt": now,
     }
-    sections = {
-        "todos": interpretation.get("todos", []),
-        "todoStates": [False for _ in interpretation.get("todos", [])],
-        "milestones": interpretation.get("milestones", []),
-        "questions": interpretation.get("questions", []),
-    }
+    headline = clean_text_value(summary_result.get("summaryHeadline")) or clean_text_value(summary_result.get("title")) or "Neue Notiz"
+    summary_text = clean_text_value(summary_result.get("summary")) or text.strip()
+    category = guessed_category or classify_note_category(api_key, summary_model, summary_text) or resolve_note_category(
+        {
+            "title": headline,
+            "summaryHeadline": headline,
+            "summary": summary_text,
+            "rawTranscript": text,
+        }
+    )
     return {
         "id": note_id,
-        "title": interpretation.get("title", "Neue Notiz"),
-        "summary": interpretation.get("summary", text.strip()),
+        "title": headline,
+        "summaryHeadline": headline,
+        "summary": summary_text,
         "rawTranscript": text.strip(),
-        "bullets": interpretation.get("bullets", []),
-        "tags": interpretation.get("tags", infer_tags(text)),
-        "summarySections": sections,
-        "followUpQuestionReviews": [],
+        "category": category,
         "audioRelativePath": audio_relative_path,
         "entries": [entry],
         "createdAt": now,
@@ -170,48 +228,46 @@ def build_note_from_text(
     }
 
 
+def reanalyze_note(
+    note: dict[str, object],
+    *,
+    api_key: str,
+    summary_model: str,
+) -> dict[str, object]:
+    transcripts = [str(item.get("transcript", "")).strip() for item in note.get("entries", []) if isinstance(item, dict) and str(item.get("transcript", "")).strip()]
+    if not transcripts:
+        raise ValueError("Keine Eintraege fuer diese Notiz vorhanden")
+    note = recompute_summary(
+        note,
+        api_key=api_key,
+        summary_model=summary_model,
+    )
+    return note
+
+
 def recompute_summary(
     note: dict[str, object],
     *,
     api_key: str,
     summary_model: str,
-    follow_up_model: str | None,
-    excluded_questions: list[str],
 ) -> dict[str, object]:
     entries = [str(entry.get("transcript", "")).strip() for entry in note.get("entries", []) if isinstance(entry, dict)]
     entries = [item for item in entries if item]
     if not entries:
         return note
-    sections = note.get("summarySections", {}) if isinstance(note.get("summarySections", {}), dict) else {}
     summary_result = summarize_note_timeline(
         api_key=api_key,
         model=summary_model,
-        note_title=str(note.get("title", "")),
+        note_title=clean_text_value(note.get("title")),
         entry_transcripts=entries,
-        current_sections=sections,
-        excluded_questions=excluded_questions,
     )
-    if summary_result.get("questions") is None:
-        summary_result["questions"] = []
-    current_todos = summary_result.get("todos", [])
-    current_states = summary_result.get("todoStates", [])
-    if len(current_states) != len(current_todos):
-        current_states = [False for _ in current_todos]
-    note["summary"] = summary_result.get("summary", note.get("summary", ""))
-    note["summarySections"] = {
-        "todos": current_todos,
-        "todoStates": current_states,
-        "milestones": summary_result.get("milestones", []),
-        "questions": summary_result.get("questions", []),
-    }
+    summary_headline = clean_text_value(summary_result.get("summaryHeadline")) or clean_text_value(note.get("title")) or "Neue Notiz"
+    note["summary"] = clean_text_value(summary_result.get("summary")) or clean_text_value(note.get("summary"))
+    note["title"] = summary_headline
+    note["summaryHeadline"] = summary_headline
+    note["category"] = classify_note_category(api_key, summary_model, note["summary"]) or resolve_note_category(note)
     note["rawTranscript"] = "\n".join(entries)
     return note
-
-
-def note_excluded_questions(note: dict[str, object]) -> list[str]:
-    excluded = [str(item) for item in note.get("summarySections", {}).get("questions", [])]
-    excluded.extend(str(review.get("question", "")) for review in note.get("followUpQuestionReviews", []) if isinstance(review, dict))
-    return [item for item in excluded if item.strip()]
 
 
 config = get_config()
@@ -319,12 +375,10 @@ async def create_voice_note(
         note = {
             "id": make_note_id(),
             "title": "Neue Notiz",
+            "summaryHeadline": "Neue Notiz",
             "summary": "",
             "rawTranscript": "",
-            "bullets": [],
-            "tags": [],
-            "summarySections": {"todos": [], "todoStates": [], "milestones": [], "questions": []},
-            "followUpQuestionReviews": [],
+            "category": "",
             "audioRelativePath": "",
             "entries": [],
             "createdAt": utc_now(),
@@ -373,28 +427,17 @@ async def create_voice_note(
             note_result["audioRelativePath"] = relative_path
             note_result["createdAt"] = note["createdAt"]
             note_result["updatedAt"] = utc_now()
-            note_result["followUpQuestionReviews"] = []
-            note_result["summarySections"] = {
-                "todos": note_result.get("summarySections", {}).get("todos", []),
-                "todoStates": note_result.get("summarySections", {}).get("todoStates", []),
-                "milestones": note_result.get("summarySections", {}).get("milestones", []),
-                "questions": note_result.get("summarySections", {}).get("questions", []),
-            }
             note = note_result
         else:
-            interpretation = infer_local_interpretation(transcript)
-            if not str(note.get("title", "")).strip():
-                note["title"] = interpretation["title"]
+            summary_result = interpret_text_note(api_key, summary_model, transcript)
+            if not clean_text_value(note.get("title")):
+                note["title"] = clean_text_value(summary_result.get("summaryHeadline")) or note.get("title", "Neue Notiz")
             if not note.get("summary"):
-                note["summary"] = interpretation["summary"]
-            note["bullets"] = note.get("bullets") or interpretation["bullets"]
-            note["tags"] = note.get("tags") or interpretation["tags"]
+                note["summary"] = clean_text_value(summary_result.get("summary")) or transcript.strip()
             note = recompute_summary(
                 note,
                 api_key=api_key,
                 summary_model=summary_model,
-                follow_up_model=str(current_settings.get("followUpModel") or ""),
-                excluded_questions=note_excluded_questions(note),
             )
     except Exception as error:
         entry["transcriptionState"] = "pending_retry"
@@ -441,19 +484,26 @@ def append_text_to_note(note_id: str, payload: AppendTextRequest) -> NoteRespons
     note["updatedAt"] = now
     if api_key:
         try:
-            note = recompute_summary(
+            note = reanalyze_note(
                 note,
                 api_key=api_key,
                 summary_model=summary_model,
-                follow_up_model=str(current_settings.get("followUpModel") or ""),
-                excluded_questions=note_excluded_questions(note),
             )
         except Exception:
             pass
     else:
-        interpretation = infer_local_interpretation("\n".join(transcripts))
-        note["summary"] = note.get("summary") or interpretation["summary"]
-        note["title"] = note.get("title") or interpretation["title"]
+        try:
+            note = reanalyze_note(
+                note,
+                api_key="",
+                summary_model=summary_model,
+            )
+        except Exception:
+            summary_result = interpret_text_note("", summary_model, "\n".join(transcripts))
+            note["summaryHeadline"] = summary_result["summaryHeadline"]
+            note["summary"] = summary_result["summary"]
+            note["title"] = summary_result["summaryHeadline"]
+            note["category"] = classify_note_category("", summary_model, summary_result["summary"])
     note["updatedAt"] = utc_now()
     store.save_note(note)
     return NoteResponse(note=note_to_model(note, lambda rel: f"/media/{rel}"))
@@ -469,84 +519,46 @@ def regenerate_summary(note_id: str) -> NoteResponse:
         raise HTTPException(status_code=404, detail="Note nicht gefunden")
     transcripts = [str(item.get("transcript", "")).strip() for item in note.get("entries", []) if isinstance(item, dict) and str(item.get("transcript", "")).strip()]
     if not transcripts:
-        raise HTTPException(status_code=400, detail="Keine Einträge für diese Notiz vorhanden")
-    if api_key:
-        note = recompute_summary(
-            note,
-            api_key=api_key,
-            summary_model=summary_model,
-            follow_up_model=str(current_settings.get("followUpModel") or ""),
-            excluded_questions=note_excluded_questions(note),
-        )
-    else:
-        interpretation = infer_local_interpretation("\n".join(transcripts))
-        note["summary"] = interpretation["summary"]
-        note["summarySections"] = {
-            "todos": interpretation["todos"],
-            "todoStates": [False for _ in interpretation["todos"]],
-            "milestones": interpretation["milestones"],
-            "questions": interpretation["questions"],
-        }
+        raise HTTPException(status_code=400, detail="Keine Eintraege fuer diese Notiz vorhanden")
+    note = reanalyze_note(
+        note,
+        api_key=api_key,
+        summary_model=summary_model,
+    )
     note["updatedAt"] = utc_now()
     store.save_note(note)
     return NoteResponse(note=note_to_model(note, lambda rel: f"/media/{rel}"))
 
 
-@app.post("/api/notes/{note_id}/todos/{todo_index}/toggle", response_model=NoteResponse)
-def toggle_todo(note_id: str, todo_index: int, payload: ToggleTodoRequest) -> NoteResponse:
-    note = store.get_note(note_id)
-    if note is None:
-        raise HTTPException(status_code=404, detail="Note nicht gefunden")
-    sections = note.get("summarySections", {})
-    todos = list(sections.get("todos", []))
-    if todo_index < 0 or todo_index >= len(todos):
-        raise HTTPException(status_code=400, detail="Todo Index ist ungueltig")
-    states = list(sections.get("todoStates", []))
-    while len(states) < len(todos):
-        states.append(False)
-    states[todo_index] = bool(payload.checked)
-    sections["todoStates"] = states
-    note["summarySections"] = sections
-    note["updatedAt"] = utc_now()
-    store.save_note(note)
-    return NoteResponse(note=note_to_model(note, lambda rel: f"/media/{rel}"))
+@app.post("/api/notes/{note_id}/analyze", response_model=NoteResponse)
+def analyze_note(note_id: str) -> NoteResponse:
+    return regenerate_summary(note_id)
 
 
-@app.post("/api/notes/{note_id}/follow-up/{question_index}/dismiss", response_model=NoteResponse)
-def dismiss_follow_up(note_id: str, question_index: int, payload: DismissFollowUpRequest) -> NoteResponse:
+@app.post("/api/routines/reanalyze-notes", response_model=RoutineResponse)
+def reanalyze_all_notes() -> RoutineResponse:
     current_settings = {**default_settings(config), **store.load_settings()}
     api_key = str(current_settings.get("openAiApiKey") or "")
-    follow_up_model = str(current_settings.get("followUpModel") or config.follow_up_model)
     summary_model = str(current_settings.get("summaryModel") or config.summary_model)
-    note = store.get_note(note_id)
-    if note is None:
-        raise HTTPException(status_code=404, detail="Note nicht gefunden")
-    sections = note.get("summarySections", {})
-    questions = list(sections.get("questions", []))
-    if question_index < 0 or question_index >= len(questions):
-        raise HTTPException(status_code=400, detail="Fragenindex ist ungueltig")
-    removed_question = questions.pop(question_index)
-    reviews = list(note.get("followUpQuestionReviews", []))
-    reviews.append({"question": removed_question, "reason": payload.reason, "createdAt": utc_now()})
-    note["followUpQuestionReviews"] = reviews
-    replacement = ""
-    if api_key:
-        replacement = generate_follow_up_question(
-            api_key=api_key,
-            model=follow_up_model,
-            note_title=str(note.get("title", "")),
-            note_summary=str(note.get("summary", "")),
-            existing_questions=questions,
-            dismissed_question=removed_question,
-            dismissed_reason=payload.reason,
-            excluded_questions=note_excluded_questions(note),
-        )
-    if replacement and normalize_question_key(replacement) not in {normalize_question_key(item) for item in questions}:
-        questions.append(replacement)
-    note["summarySections"] = {**sections, "questions": questions[:5]}
-    note["updatedAt"] = utc_now()
-    store.save_note(note)
-    return NoteResponse(note=note_to_model(note, lambda rel: f"/media/{rel}"))
+    updated_notes = 0
+    skipped_notes = 0
+    for note in store.list_notes():
+        transcripts = [str(item.get("transcript", "")).strip() for item in note.get("entries", []) if isinstance(item, dict) and str(item.get("transcript", "")).strip()]
+        if not transcripts:
+            skipped_notes += 1
+            continue
+        try:
+            note = reanalyze_note(
+                note,
+                api_key=api_key,
+                summary_model=summary_model,
+            )
+            note["updatedAt"] = utc_now()
+            store.save_note(note)
+            updated_notes += 1
+        except Exception:
+            skipped_notes += 1
+    return RoutineResponse(ok=True, updatedNotes=updated_notes, skippedNotes=skipped_notes)
 
 
 @app.post("/api/notes/{note_id}/entries/{entry_id}/retry", response_model=NoteResponse)
@@ -585,8 +597,6 @@ def retry_transcription(note_id: str, entry_id: str) -> NoteResponse:
         note,
         api_key=api_key,
         summary_model=summary_model,
-        follow_up_model=str(current_settings.get("followUpModel") or ""),
-        excluded_questions=note_excluded_questions(note),
     )
     store.save_note(note)
     return NoteResponse(note=note_to_model(note, lambda rel: f"/media/{rel}"))

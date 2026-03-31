@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 from collections import Counter
 from pathlib import Path
@@ -50,9 +49,106 @@ STOP_WORDS = {
     "the",
 }
 
+CATEGORY_ALIASES = {
+    "idea": "Idea",
+    "ideen": "Idea",
+    "suggestion": "Idea",
+    "task": "Task",
+    "to-do": "Task",
+    "todo": "Task",
+    "aufgabe": "Task",
+}
+
 
 def _clean_text(text: str) -> str:
     return re.sub(r"\s+", " ", (text or "").strip())
+
+
+def _normalize_category(value: Any) -> str:
+    text = _clean_text(str(value or "")).lower()
+    if not text:
+        return ""
+    normalized = text.replace(" ", "")
+    return CATEGORY_ALIASES.get(text, CATEGORY_ALIASES.get(normalized, ""))
+
+
+def _extract_project_tag(text: str) -> str:
+    clean = _clean_text(text)
+    if not clean:
+        return ""
+    match = re.search(r"(?:projekt|project|für|fuer)[:\s]+([A-Za-zÄÖÜäöüß0-9][A-Za-zÄÖÜäöüß0-9 _/-]{2,40})", clean, re.IGNORECASE)
+    if match:
+        return _clean_text(match.group(1)).rstrip(".,;:")[:48]
+    if "/" in clean:
+        prefix = clean.split("/")[0].strip()
+        if 3 <= len(prefix) <= 40:
+            return prefix[:48]
+    return ""
+
+
+def _extract_action_items(text: str, limit: int = 5) -> list[str]:
+    clean = _clean_text(text)
+    if not clean:
+        return []
+
+    candidates: list[str] = []
+    for raw_line in re.split(r"[\n\r]+", text):
+        line = raw_line.strip().lstrip("-•*0123456789. )\t")
+        if not line:
+            continue
+        if re.search(r"\b(muss|soll|bitte|todo|aufgabe|check|erledigen|planen)\b", line, re.IGNORECASE):
+            candidates.append(_clean_text(line).rstrip(".,;:"))
+
+    if not candidates:
+        for sentence in re.split(r"(?<=[.!?])\s+", clean):
+            if re.search(r"\b(muss|soll|bitte|kannst|naechste|nächste|erledigen)\b", sentence, re.IGNORECASE):
+                candidates.append(_clean_text(sentence).rstrip(".,;:"))
+
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in candidates:
+        key = item.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(item)
+        if len(result) >= limit:
+            break
+    return result
+
+
+def _infer_category_from_text(text: str) -> str:
+    lowered = _clean_text(text).lower()
+    if not lowered:
+        return ""
+    if re.search(r"\b(todo|aufgabe|erledigen|machen|soll|muss|bitte|deadline|termin)\b", lowered):
+        return "Task"
+    if re.search(r"\b(idee|brainstorm|konzept|vorschlag|skizze|inspiriert|würde|wuerde)\b", lowered):
+        return "Idea"
+    return ""
+
+
+def infer_local_summary(text: str) -> dict[str, Any]:
+    clean = _clean_text(text)
+    if not clean:
+        return {
+            "summaryHeadline": "Neue Notiz",
+            "summary": "",
+        }
+
+    sentences = re.split(r"(?<=[.!?])\s+", clean)
+    headline = sentences[0] if sentences else clean
+    headline = headline[:72].strip().rstrip(".,;:") or "Neue Notiz"
+    summary = clean if len(clean) <= 220 else f"{clean[:217].rstrip()}..."
+
+    return {
+        "summaryHeadline": headline,
+        "summary": summary,
+    }
+
+
+def infer_local_category(text: str) -> str:
+    return _infer_category_from_text(text)
 
 
 def _openai_headers(api_key: str) -> dict[str, str]:
@@ -144,53 +240,31 @@ def _openai_transcribe(
 
 
 def infer_local_interpretation(text: str) -> dict[str, Any]:
-    clean = _clean_text(text)
-    if not clean:
-        return {
-            "title": "Neue Notiz",
-            "summary": "",
-            "todos": [],
-            "milestones": [],
-            "questions": [],
-            "bullets": [],
-            "tags": [],
-        }
-    sentences = re.split(r"(?<=[.!?])\s+", clean)
-    title = sentences[0] if sentences else clean
-    title = title[:72].strip().rstrip(".,;:")
-    if not title:
-        title = "Neue Notiz"
-    bullets = [line.strip(" -*•\t") for line in re.split(r"[\n\r]+", text) if line.strip()]
-    bullets = [item for item in bullets if item][:6]
-    summary = clean if len(clean) <= 220 else f"{clean[:217].rstrip()}..."
-    words = [word.lower() for word in re.findall(r"[A-Za-zÄÖÜäöüß0-9]{3,}", clean)]
-    counts = Counter(word for word in words if word not in STOP_WORDS)
-    tags = [word for word, _ in counts.most_common(4)]
-    return {
-        "title": title,
-        "summary": summary,
-        "todos": [],
-        "milestones": [],
-        "questions": [],
-        "bullets": bullets,
-        "tags": tags,
-    }
+    summary = infer_local_summary(text)
+    summary["category"] = infer_local_category(text)
+    return summary
 
 
-def _build_note_schema() -> dict[str, Any]:
+def _build_summary_schema() -> dict[str, Any]:
     return {
         "type": "object",
         "additionalProperties": False,
         "properties": {
-            "title": {"type": "string"},
+            "summaryHeadline": {"type": "string"},
             "summary": {"type": "string"},
-            "todos": {"type": "array", "items": {"type": "string"}, "maxItems": 10},
-            "milestones": {"type": "array", "items": {"type": "string"}, "maxItems": 10},
-            "questions": {"type": "array", "items": {"type": "string"}, "maxItems": 5},
-            "bullets": {"type": "array", "items": {"type": "string"}, "maxItems": 10},
-            "tags": {"type": "array", "items": {"type": "string"}, "maxItems": 6},
         },
-        "required": ["title", "summary", "todos", "milestones", "questions", "bullets", "tags"],
+        "required": ["summaryHeadline", "summary"],
+    }
+
+
+def _build_category_schema() -> dict[str, Any]:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "category": {"type": "string"},
+        },
+        "required": ["category"],
     }
 
 
@@ -198,7 +272,7 @@ def interpret_text_note(api_key: str, model: str, text: str) -> dict[str, Any]:
     clean_key = api_key.strip()
     clean_text = _clean_text(text)
     if not clean_key:
-        return infer_local_interpretation(clean_text)
+        return infer_local_summary(clean_text)
     if not clean_text:
         raise ValueError("Text ist leer")
 
@@ -208,31 +282,59 @@ def interpret_text_note(api_key: str, model: str, text: str) -> dict[str, Any]:
             {
                 "role": "system",
                 "content": (
-                    "Du erzeugst fuer eine BrainSession-Notiz eine kurze, klare deutschsprachige Struktur. "
-                    "Antworte nur als JSON mit title, summary, todos, milestones, questions, bullets und tags. "
-                    "Gib optionale Felder nur dann sinnvoll aus, wenn sie im Text vorkommen. "
+                    "Du erzeugst fuer eine BrainSession-Notiz nur eine kurze deutschsprachige Zusammenfassung. "
+                    "Antworte nur als JSON mit summaryHeadline und summary. "
+                    "summaryHeadline soll maximal fuenf Woerter haben und catchy klingen. "
                     "Die Zusammenfassung soll den gesamten Inhalt knapp und integriert wiedergeben."
                 ),
             },
             {"role": "user", "content": f"Notiztext:\n{clean_text}"},
         ],
-        "text": {"format": {"type": "json_schema", "name": "note_interpretation", "schema": _build_note_schema()}},
+        "text": {"format": {"type": "json_schema", "name": "note_summary", "schema": _build_summary_schema()}},
     }
     try:
         response = _openai_responses(clean_key, payload)
         raw = _extract_output_text(response)
         parsed = json.loads(raw)
+        fallback = infer_local_summary(clean_text)
         return {
-            "title": _clean_text(str(parsed.get("title", ""))) or infer_local_interpretation(clean_text)["title"],
-            "summary": _clean_text(str(parsed.get("summary", ""))) or infer_local_interpretation(clean_text)["summary"],
-            "todos": _normalize_list(parsed.get("todos")),
-            "milestones": _normalize_list(parsed.get("milestones")),
-            "questions": _normalize_list(parsed.get("questions"))[:5],
-            "bullets": _normalize_list(parsed.get("bullets")),
-            "tags": _normalize_tags(parsed.get("tags")),
+            "summaryHeadline": _clean_text(str(parsed.get("summaryHeadline", ""))) or fallback["summaryHeadline"],
+            "summary": _clean_text(str(parsed.get("summary", ""))) or fallback["summary"],
         }
     except Exception:
-        return infer_local_interpretation(clean_text)
+        return infer_local_summary(clean_text)
+
+
+def classify_note_category(api_key: str, model: str, summary_text: str) -> str:
+    clean_key = api_key.strip()
+    clean_summary = _clean_text(summary_text)
+    if not clean_summary:
+        return ""
+    if not clean_key:
+        return infer_local_category(clean_summary)
+
+    payload = {
+        "model": model.strip() or "gpt-4o-mini",
+        "input": [
+            {
+                "role": "system",
+                "content": (
+                    "Du klassifizierst eine deutsche Notiz-Zusammenfassung in genau eine von drei Kategorien: Idea, Task oder leer. "
+                    "Antworte nur als JSON mit category. "
+                    "category muss genau Idea oder Task sein, oder leer bleiben wenn es nicht sicher erkennbar ist."
+                ),
+            },
+            {"role": "user", "content": f"Zusammenfassung:\n{clean_summary}"},
+        ],
+        "text": {"format": {"type": "json_schema", "name": "note_category", "schema": _build_category_schema()}},
+    }
+    try:
+        response = _openai_responses(clean_key, payload)
+        raw = _extract_output_text(response)
+        parsed = json.loads(raw)
+        return _normalize_category(parsed.get("category")) or infer_local_category(clean_summary)
+    except Exception:
+        return infer_local_category(clean_summary)
 
 
 def summarize_note_timeline(
@@ -240,8 +342,6 @@ def summarize_note_timeline(
     model: str,
     note_title: str,
     entry_transcripts: list[str],
-    current_sections: dict[str, Any] | None = None,
-    excluded_questions: list[str] | None = None,
 ) -> dict[str, Any]:
     clean_key = api_key.strip()
     entries = [f"Teilnotiz {index + 1}: {_clean_text(text)}" for index, text in enumerate(entry_transcripts) if _clean_text(text)]
@@ -250,15 +350,10 @@ def summarize_note_timeline(
     if not clean_key:
         joined = " ".join(entries)
         return {
+            "summaryHeadline": _clean_text(note_title)[:72] or "Neue Notiz",
             "summary": joined[:600] if len(joined) <= 600 else f"{joined[:597].rstrip()}...",
-            "todos": list(current_sections.get("todos", [])) if current_sections else [],
-            "todoStates": list(current_sections.get("todoStates", [])) if current_sections else [],
-            "milestones": list(current_sections.get("milestones", [])) if current_sections else [],
-            "questions": [],
         }
 
-    current_sections = current_sections or {}
-    excluded_questions = excluded_questions or []
     payload = {
         "model": model.strip() or "gpt-4o",
         "input": [
@@ -268,12 +363,9 @@ def summarize_note_timeline(
                     "Du erstellst eine strukturierte deutsche Zusammenfassung einer fortlaufenden Notiz. "
                     "Fruehere Aussagen koennen spaeter ergaenzt oder korrigiert werden. "
                     "Die spaeteren Angaben haben Vorrang, wenn sie im Verlauf eine fruehere Aussage revidieren. "
-                    "Die Ausgabe muss JSON sein mit summary, todos, milestones und questions. "
-                    "Gib optionale Felder nur aus, wenn sie im Verlauf wirklich vorkommen. "
+                    "Die Ausgabe muss JSON sein mit summaryHeadline und summary. "
+                    "summaryHeadline soll maximal fuenf Woerter haben und die gesamte Notiz knapp benennen. "
                     "Formuliere die Zusammenfassung integriert, nicht als einfache Listenfolge."
-                    + (f"\n\nBisherige To-dos: {json.dumps(current_sections.get('todos', []), ensure_ascii=False)}" if current_sections.get("todos") else "")
-                    + (f"\nBisherige Milestones: {json.dumps(current_sections.get('milestones', []), ensure_ascii=False)}" if current_sections.get("milestones") else "")
-                    + (f"\nBereits ausgeschlossene Folgefragen: {json.dumps(excluded_questions, ensure_ascii=False)}" if excluded_questions else "")
                 ),
             },
             {"role": "user", "content": f"Notiztitel: {_clean_text(note_title) or 'Neue Notiz'}\n\nVerlauf:\n" + "\n\n".join(entries)},
@@ -286,12 +378,10 @@ def summarize_note_timeline(
                     "type": "object",
                     "additionalProperties": False,
                     "properties": {
+                        "summaryHeadline": {"type": "string"},
                         "summary": {"type": "string"},
-                        "todos": {"type": "array", "items": {"type": "string"}, "maxItems": 10},
-                        "milestones": {"type": "array", "items": {"type": "string"}, "maxItems": 10},
-                        "questions": {"type": "array", "items": {"type": "string"}, "maxItems": 5},
                     },
-                    "required": ["summary", "todos", "milestones", "questions"],
+                    "required": ["summaryHeadline", "summary"],
                 },
             }
         },
@@ -303,25 +393,16 @@ def summarize_note_timeline(
         summary = _clean_text(str(parsed.get("summary", "")))
         if not summary:
             raise ValueError("No summary returned")
-        todos = _normalize_list(parsed.get("todos"))
-        milestones = _normalize_list(parsed.get("milestones"))
-        questions = _filter_questions(_normalize_list(parsed.get("questions"))[:5], excluded_questions)
-        todo_states = _merge_todo_states(current_sections.get("todos", []), current_sections.get("todoStates", []), todos)
+        summary_headline = _clean_text(str(parsed.get("summaryHeadline", "")))
         return {
+            "summaryHeadline": summary_headline,
             "summary": summary,
-            "todos": todos,
-            "todoStates": todo_states,
-            "milestones": milestones,
-            "questions": questions,
         }
     except Exception:
-        current_summary = str(current_sections.get("summary", "")).strip()
+        joined = " ".join(entries)
         return {
-            "summary": current_summary or entries[-1],
-            "todos": list(current_sections.get("todos", [])),
-            "todoStates": list(current_sections.get("todoStates", [])),
-            "milestones": list(current_sections.get("milestones", [])),
-            "questions": _filter_questions(list(current_sections.get("questions", [])), excluded_questions),
+            "summaryHeadline": _clean_text(note_title)[:72] or "Neue Notiz",
+            "summary": entries[-1] if entries else joined,
         }
 
 
@@ -445,4 +526,3 @@ def _filter_questions(questions: list[str], excluded_questions: list[str]) -> li
 def _merge_todo_states(current_todos: list[str], current_states: list[bool], todos: list[str]) -> list[bool]:
     state_map = {normalize_question_key(todo): bool(current_states[index]) for index, todo in enumerate(current_todos) if index < len(current_states)}
     return [state_map.get(normalize_question_key(todo), False) for todo in todos]
-

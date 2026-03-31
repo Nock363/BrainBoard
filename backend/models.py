@@ -5,19 +5,6 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 
-class NoteSummarySections(BaseModel):
-    todos: list[str] = Field(default_factory=list)
-    todoStates: list[bool] = Field(default_factory=list)
-    milestones: list[str] = Field(default_factory=list)
-    questions: list[str] = Field(default_factory=list)
-
-
-class FollowUpQuestionReview(BaseModel):
-    question: str
-    reason: str
-    createdAt: str
-
-
 class NoteTimelineEntry(BaseModel):
     id: str
     kind: Literal["voice", "text"]
@@ -32,12 +19,10 @@ class NoteTimelineEntry(BaseModel):
 class NoteNode(BaseModel):
     id: str
     title: str
+    summaryHeadline: str = ""
     summary: str
     rawTranscript: str
-    bullets: list[str] = Field(default_factory=list)
-    tags: list[str] = Field(default_factory=list)
-    summarySections: NoteSummarySections = Field(default_factory=NoteSummarySections)
-    followUpQuestionReviews: list[FollowUpQuestionReview] = Field(default_factory=list)
+    category: str = ""
     audioRelativePath: str = ""
     entries: list[NoteTimelineEntry] = Field(default_factory=list)
     createdAt: str
@@ -97,3 +82,8 @@ class ReportResponse(BaseModel):
     reportMarkdown: str
     fileName: str
 
+
+class RoutineResponse(BaseModel):
+    ok: bool
+    updatedNotes: int
+    skippedNotes: int = 0

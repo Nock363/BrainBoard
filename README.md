@@ -2,12 +2,13 @@
 
 Standalone BrainSession web/PWA replacement with:
 
-- voice notes recorded in the browser
-- text note creation
-- note feed and note detail flow
+- German-first voice notes and content
+- a three-pane swipe layout: Spark, Inbox, Board
+- super-clean sticky notes with details only on click
+- AI categorization into Idea, Task, and Research
+- project-tag based Kanban columns
 - timeline entries with voice/text distinction
-- note summaries with dynamic sections
-- follow-up question review via long-press
+- note summaries with dynamic sections and follow-up review
 - delete confirmations and loading overlays
 - durable persistence in SQLite + filesystem audio storage
 - PWA install support for iPhone/iOS

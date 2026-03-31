@@ -2,6 +2,7 @@ import type {
   NoteResponse,
   NotesResponse,
   ReportResponse,
+  RoutineResponse,
   SettingsResponse,
 } from './types'
 
@@ -90,6 +91,18 @@ export const api = {
   },
   async regenerateSummary(noteId: string): Promise<NoteResponse> {
     return requestJson(`/api/notes/${encodeURIComponent(noteId)}/regenerate-summary`, {
+      method: 'POST',
+      body: '{}',
+    })
+  },
+  async analyzeNote(noteId: string): Promise<NoteResponse> {
+    return requestJson(`/api/notes/${encodeURIComponent(noteId)}/analyze`, {
+      method: 'POST',
+      body: '{}',
+    })
+  },
+  async reanalyzeAllNotes(): Promise<RoutineResponse> {
+    return requestJson('/api/routines/reanalyze-notes', {
       method: 'POST',
       body: '{}',
     })
