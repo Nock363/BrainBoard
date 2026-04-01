@@ -94,6 +94,9 @@ def guess_note_category(text: str) -> str:
 
 
 def resolve_note_category(note: dict[str, object]) -> str:
+    if "manualCategory" in note:
+        return validate_note_category(clean_text_value(note.get("manualCategory")))
+
     category = clean_text_value(note.get("category"))
     if category in {"Idea", "Task"}:
         return category
@@ -548,7 +551,9 @@ def update_note_category(note_id: str, payload: UpdateNoteCategoryRequest) -> No
     if note is None:
         raise HTTPException(status_code=404, detail="Note nicht gefunden")
     try:
-        note["category"] = validate_note_category(payload.category)
+        validated_category = validate_note_category(payload.category)
+        note["category"] = validated_category
+        note["manualCategory"] = validated_category
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     note["updatedAt"] = utc_now()
@@ -682,6 +687,7 @@ def root() -> Response:
 
 
 if config.frontend_dist_dir.exists():
+    app.mount("/media", StaticFiles(directory=str(config.media_dir), html=False), name="media")
     app.mount("/", StaticFiles(directory=str(config.frontend_dist_dir), html=True), name="frontend")
 
 

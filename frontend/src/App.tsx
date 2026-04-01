@@ -93,7 +93,7 @@ function noteTitle(note: NoteNode): string {
 function categoryLabel(category: NoteCategory): string {
   if (category === 'Idea') return 'Idee'
   if (category === 'Task') return 'To-Do'
-  return 'Keins davon'
+  return 'Notiz'
 }
 
 function categoryThemeClass(category: NoteCategory): string {
@@ -101,6 +101,28 @@ function categoryThemeClass(category: NoteCategory): string {
   if (category === 'Task') return 'sticky-note-task'
   return 'sticky-note-neutral'
 }
+
+const noteCategoryOptions: Array<{
+  value: NoteCategory
+  label: string
+  themeClass: string
+}> = [
+  {
+    value: '',
+    label: 'Notiz',
+    themeClass: 'sticky-note-neutral',
+  },
+  {
+    value: 'Idea',
+    label: 'Idee',
+    themeClass: 'sticky-note-idea',
+  },
+  {
+    value: 'Task',
+    label: 'To-Do',
+    themeClass: 'sticky-note-task',
+  },
+]
 
 function noteSummary(note: NoteNode): string {
   const summary = safeText(note.summary)
@@ -133,7 +155,7 @@ function getBoardColumns(notes: NoteNode[]): BoardColumn[] {
   const columns: BoardColumn[] = [
     { key: 'idea', label: 'Ideen', notes: ideaNotes, kind: 'idea' },
     { key: 'task', label: 'To-Dos', notes: taskNotes, kind: 'task' },
-    { key: 'neutral', label: 'Keins davon', notes: neutralNotes, kind: 'neutral' },
+    { key: 'neutral', label: 'Notiz', notes: neutralNotes, kind: 'neutral' },
   ]
 
   return columns
@@ -382,7 +404,28 @@ export default function App() {
     if (!selectedNote) {
       return
     }
-    const response = await runBusy('Klasse wird geändert …', async () => api.updateNoteCategory(selectedNote.id, category))
+    const noteId = selectedNote.id
+    setNotes((currentNotes) => currentNotes.map((note) => (note.id === noteId ? { ...note, category } : note)))
+    try {
+      const response = await runBusy('Klasse wird geändert …', async () => api.updateNoteCategory(noteId, category))
+      await updateNotesFromResponse(response)
+    } catch (error) {
+      setError(error instanceof Error ? error.message : 'Die Klasse konnte nicht geändert werden.')
+      await reloadNotes()
+    }
+  }
+
+  const rebuildSelectedNote = async () => {
+    if (!selectedNote) {
+      return
+    }
+    const voiceEntries = selectedNote.entries.filter((entry) => Boolean(entry.audioRelativePath.trim()))
+    const response = await runBusy('Notiz wird neu zusammengefasst und transkribiert …', async () => {
+      for (const entry of voiceEntries) {
+        await api.retryTranscription(selectedNote.id, entry.id)
+      }
+      return api.analyzeNote(selectedNote.id)
+    })
     await updateNotesFromResponse(response)
   }
 
@@ -513,7 +556,8 @@ export default function App() {
               note={selectedNote}
               onClose={closeNoteDetail}
               onDeleteNote={() => setDeleteNoteTarget(selectedNote)}
-              onChangeCategory={(category) => void changeSelectedNoteCategory(category)}
+              onChangeCategory={(category) => changeSelectedNoteCategory(category)}
+              onRebuildNote={() => void rebuildSelectedNote()}
             />
           ) : (
             <div className="page-slider h-100" ref={pageSliderRef} onScroll={handlePageScroll}>
@@ -799,7 +843,7 @@ function BoardColumnView(props: {
   selectedNoteId: string
 }) {
   const { column } = props
-  const toneLabel = column.kind === 'idea' ? 'Idee' : column.kind === 'task' ? 'Aufgabe' : 'Keins davon'
+  const toneLabel = column.kind === 'idea' ? 'Idee' : column.kind === 'task' ? 'Aufgabe' : 'Notiz'
 
   return (
     <article className="board-column card border-0 shadow-sm flex-shrink-0">
@@ -905,71 +949,120 @@ function NoteDetailPage(props: {
   note: NoteNode
   onClose: () => void
   onDeleteNote: () => void
-  onChangeCategory: (category: NoteCategory) => void
+  onChangeCategory: (category: NoteCategory) => Promise<void>
+  onRebuildNote: () => void
 }) {
   const note = props.note
   const [categoryDraft, setCategoryDraft] = useState<NoteCategory>(note.category)
+  const [transcriptOpen, setTranscriptOpen] = useState(false)
+  const [categoryPickerOpen, setCategoryPickerOpen] = useState(false)
 
   useEffect(() => {
     setCategoryDraft(note.category)
+    setTranscriptOpen(false)
+    setCategoryPickerOpen(false)
   }, [note.category, note.id])
 
+  const detailNoteClasses = ['detail-note-surface', categoryThemeClass(note.category)].join(' ')
+
   return (
-    <section className="note-detail-page h-100 d-flex flex-column gap-3">
-      <div className="card border-0 shadow-sm">
-        <div className="card-body p-3 p-lg-4 d-flex flex-column flex-lg-row align-items-start justify-content-between gap-3">
-          <div>
-            <p className="small text-uppercase text-secondary fw-semibold mb-1">Notiz</p>
-            <h2 className="h3 mb-1">Zusammenfassung</h2>
-            <p className="text-secondary mb-0">Die Seite zeigt nur noch das Wesentliche.</p>
-          </div>
-          <div className="d-flex flex-column flex-sm-row flex-wrap align-items-sm-end gap-2 justify-content-end">
-            <div className="d-flex flex-column gap-1">
-              <label className="form-label small text-uppercase text-secondary fw-semibold mb-0" htmlFor="note-category-select">
-                Klasse ändern
-              </label>
-              <select
-                id="note-category-select"
-                className="form-select form-select-sm"
-                value={categoryDraft}
-                onChange={(event) => {
-                  const nextCategory = event.target.value as NoteCategory
-                  setCategoryDraft(nextCategory)
-                  props.onChangeCategory(nextCategory)
-                }}
-              >
-                <option value="">Keins davon</option>
-                <option value="Idea">Idee</option>
-                <option value="Task">To-Do</option>
-              </select>
-            </div>
-            <button className="btn btn-outline-secondary btn-sm" onClick={props.onClose} type="button">
-              <i className="bi bi-arrow-left me-1" aria-hidden="true" />
-              Zurück
-            </button>
-            <button className="btn btn-outline-danger btn-sm" onClick={props.onDeleteNote} type="button">
-              <i className="bi bi-trash3-fill me-1" aria-hidden="true" />
-              Löschen
-            </button>
-          </div>
-        </div>
+    <section className={`note-detail-page h-100 d-flex flex-column ${detailNoteClasses}`}>
+      <div className="note-detail-topbar d-flex align-items-center justify-content-between gap-3 mb-3">
+        <button className="btn btn-sm btn-outline-light detail-topback" onClick={props.onClose} type="button">
+          <i className="bi bi-arrow-left me-1" aria-hidden="true" />
+          Zurück
+        </button>
+        <span className="badge rounded-pill text-bg-light text-dark detail-category-badge">{categoryLabel(note.category)}</span>
       </div>
 
-      <div className="note-detail-scroll vstack gap-3 flex-grow-1 overflow-auto pb-2">
-        <article className={`sticky-note-card ${categoryThemeClass(note.category)} detail-sticky-note`}>
-          <p className="sticky-note-summary mb-0">{note.summary || 'Noch keine Zusammenfassung vorhanden.'}</p>
+      <div className="detail-note-card vstack gap-3 flex-grow-1">
+        <article className="detail-summary-block">
+          <p className="detail-label text-uppercase small fw-semibold mb-2">Zusammenfassung</p>
+          <p className="detail-summary-text mb-0">{note.summary || 'Noch keine Zusammenfassung vorhanden.'}</p>
         </article>
 
         {note.rawTranscript ? (
-          <article className="card border-0 shadow-sm">
-            <div className="card-body p-3 p-lg-4 vstack gap-2">
-              <h3 className="h5 mb-0">Transkript</h3>
-              <div className="transcript-box mt-1">{note.rawTranscript}</div>
-            </div>
+          <article className="detail-transcript-block vstack gap-2">
+            <button
+              className="detail-transcript-toggle btn btn-sm btn-link p-0 text-start"
+              type="button"
+              onClick={() => setTranscriptOpen((current) => !current)}
+              aria-expanded={transcriptOpen}
+            >
+              <i className={`bi ${transcriptOpen ? 'bi-chevron-down' : 'bi-chevron-right'} me-1`} aria-hidden="true" />
+              Transkript
+            </button>
+            {transcriptOpen ? <div className="detail-transcript-body">{note.rawTranscript}</div> : null}
           </article>
         ) : null}
+
+        <div className="detail-actions vstack gap-2 mt-auto">
+          <button className="btn btn-light detail-action-btn" onClick={() => setCategoryPickerOpen(true)} type="button">
+            Kategorie ändern
+          </button>
+          <button className="btn btn-light detail-action-btn" onClick={props.onRebuildNote} type="button">
+            Neu zusammenfassen und neu transkribieren
+          </button>
+          <button className="btn btn-outline-light detail-action-btn" onClick={props.onDeleteNote} type="button">
+            Löschen
+          </button>
+        </div>
       </div>
+
+      {categoryPickerOpen ? (
+        <CategoryPickerModal
+          currentCategory={categoryDraft}
+          onClose={() => setCategoryPickerOpen(false)}
+          onSelect={async (category) => {
+            setCategoryDraft(category)
+            await props.onChangeCategory(category)
+            setCategoryPickerOpen(false)
+          }}
+        />
+      ) : null}
     </section>
+  )
+}
+
+function CategoryPickerModal(props: {
+  currentCategory: NoteCategory
+  onClose: () => void
+  onSelect: (category: NoteCategory) => Promise<void>
+}) {
+  return (
+    <div className="overlay-backdrop overlay-dark" onClick={props.onClose}>
+      <div className="modal-panel category-panel" onClick={(event) => event.stopPropagation()}>
+        <div className="category-panel-header d-flex align-items-start justify-content-between gap-3">
+          <div>
+            <p className="small text-uppercase text-secondary fw-semibold mb-1">Kategorie</p>
+            <h3 className="h5 mb-0">Kategorie auswählen</h3>
+          </div>
+          <button className="btn btn-outline-secondary btn-sm" onClick={props.onClose} type="button">
+            Schließen
+          </button>
+        </div>
+
+        <div className="category-panel-grid detail-type-grid detail-type-grid-modal" role="radiogroup" aria-label="Kategorie auswählen">
+          {noteCategoryOptions.map((option) => {
+            const selected = props.currentCategory === option.value
+            return (
+              <button
+                key={option.label}
+              type="button"
+              className={`detail-type-option detail-type-option-modal ${selected ? 'active' : ''}`}
+              aria-pressed={selected}
+              onClick={() => void props.onSelect(option.value)}
+            >
+                <span className={`detail-type-swatch ${option.themeClass} ${selected ? 'active' : ''}`} aria-hidden="true" />
+                <span className="detail-type-content">
+                  <span className="detail-type-title">{option.label}</span>
+                </span>
+              </button>
+            )
+          })}
+        </div>
+      </div>
+    </div>
   )
 }
 
