@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react'
 import { api, mediaUrl } from './api'
 import { useVoiceRecorder } from './hooks/useVoiceRecorder'
-import type { NoteCategory, NoteNode, SettingsResponse, TabKey } from './types'
+import type { LlmLogEntry, NoteCategory, NoteNode, SettingsResponse, TabKey } from './types'
 
 type BusyState = { message: string } | null
 
@@ -17,14 +17,83 @@ type SettingsDraft = {
   summaryModel: string
   followUpModel: string
   language: string
+  categoryPromptPrefix: string
 }
 
-type BoardColumn = {
+type BoardGroup = {
   key: string
   label: string
   notes: NoteNode[]
-  kind: 'idea' | 'task' | 'neutral'
+  keywords: string[]
+  kindCounts: Record<NoteCategory, number>
 }
+
+type GroupToken = {
+  key: string
+  label: string
+}
+
+type PreparedNoteGroup = {
+  note: NoteNode
+  tokens: GroupToken[]
+  signature: Set<string>
+  weightSum: number
+}
+
+const GROUP_STOP_WORDS = new Set([
+  'und',
+  'oder',
+  'der',
+  'die',
+  'das',
+  'ein',
+  'eine',
+  'ist',
+  'sind',
+  'mit',
+  'für',
+  'fuer',
+  'dass',
+  'du',
+  'ich',
+  'wir',
+  'was',
+  'wie',
+  'auf',
+  'im',
+  'in',
+  'am',
+  'an',
+  'zu',
+  'den',
+  'dem',
+  'des',
+  'von',
+  'noch',
+  'aber',
+  'nicht',
+  'nur',
+  'auch',
+  'als',
+  'bei',
+  'the',
+  'note',
+  'notiz',
+  'idee',
+  'todo',
+  'to',
+  'do',
+  'task',
+  'aufgabe',
+  'projekt',
+  'planung',
+  'plan',
+  'termin',
+  'terminen',
+  'besprechung',
+  'meeting',
+  'brainstorming',
+])
 
 const tabs: Array<{ key: TabKey; label: string; icon: string }> = [
   { key: 'capture', label: 'Start', icon: 'bi-stars' },
@@ -64,6 +133,233 @@ function uniqueStrings(values: string[], maxItems = 6): string[] {
     }
   }
   return result
+}
+
+function uniqueGroupTokens(tokens: GroupToken[], maxItems = 12): GroupToken[] {
+  const seen = new Set<string>()
+  const result: GroupToken[] = []
+  for (const token of tokens) {
+    if (!token.key || seen.has(token.key)) {
+      continue
+    }
+    seen.add(token.key)
+    result.push(token)
+    if (result.length >= maxItems) {
+      break
+    }
+  }
+  return result
+}
+
+function normalizeGroupToken(value: string): string {
+  return value
+    .toLocaleLowerCase('de-DE')
+    .replace(/ä/g, 'ae')
+    .replace(/ö/g, 'oe')
+    .replace(/ü/g, 'ue')
+    .replace(/ß/g, 'ss')
+}
+
+function capitalizeGroupLabel(value: string): string {
+  const clean = value.trim()
+  if (!clean) {
+    return ''
+  }
+  return clean.charAt(0).toLocaleUpperCase('de-DE') + clean.slice(1)
+}
+
+function tokenizeGroupText(value: string): GroupToken[] {
+  const matches = value.match(/[\p{L}\p{N}]+/gu) ?? []
+  const tokens: GroupToken[] = []
+  for (const rawToken of matches) {
+    const label = rawToken.trim().replace(/^[_-]+|[_-]+$/g, '')
+    if (!label) {
+      continue
+    }
+    const key = normalizeGroupToken(label)
+    if (key.length < 3 || /^\d+$/.test(key) || GROUP_STOP_WORDS.has(key)) {
+      continue
+    }
+    tokens.push({ key, label })
+  }
+  return uniqueGroupTokens(tokens, 18)
+}
+
+function extractGroupTokens(note: NoteNode): GroupToken[] {
+  const sections = [noteTitle(note), safeText(note.summaryHeadline), safeText(note.summary), safeText(note.rawTranscript)]
+  const tokens = sections.flatMap((section) => tokenizeGroupText(section))
+  return uniqueGroupTokens(tokens, 18)
+}
+
+function buildGroupSignature(tokens: GroupToken[]): Set<string> {
+  return new Set(tokens.map((token) => token.key))
+}
+
+function sharedSignatureWeight(left: Set<string>, right: Set<string>, frequency: Map<string, number>): number {
+  let weight = 0
+  for (const token of left) {
+    if (!right.has(token)) {
+      continue
+    }
+    weight += 1 / Math.max(1, frequency.get(token) ?? 1)
+  }
+  return weight
+}
+
+function signatureWeight(tokens: Set<string>, frequency: Map<string, number>): number {
+  let weight = 0
+  for (const token of tokens) {
+    weight += 1 / Math.max(1, frequency.get(token) ?? 1)
+  }
+  return weight
+}
+
+function buildGroupLabel(tokens: GroupToken[], fallback: string): string {
+  const firstToken = tokens[0]?.label ?? ''
+  const cleanFallback = fallback.trim()
+  if (firstToken.trim()) {
+    return capitalizeGroupLabel(firstToken)
+  }
+  return cleanFallback || 'Gruppe'
+}
+
+function formatGroupKeywords(tokens: GroupToken[], maxItems = 3): string[] {
+  return uniqueStrings(tokens.map((token) => capitalizeGroupLabel(token.label)).filter(Boolean), maxItems)
+}
+
+function createBoardGroups(notes: NoteNode[]): BoardGroup[] {
+  const orderedNotes = [...notes].sort((left, right) => {
+    const rightTime = new Date(right.updatedAt).getTime()
+    const leftTime = new Date(left.updatedAt).getTime()
+    return rightTime - leftTime
+  })
+
+  const prepared = orderedNotes.map((note) => {
+    const tokens = extractGroupTokens(note)
+    return {
+      note,
+      tokens,
+      signature: buildGroupSignature(tokens),
+      weightSum: 0,
+    }
+  })
+
+  const frequency = new Map<string, number>()
+  for (const item of prepared) {
+    for (const token of item.signature) {
+      frequency.set(token, (frequency.get(token) ?? 0) + 1)
+    }
+  }
+
+  const clusters: Array<{ notes: PreparedNoteGroup[]; signature: Set<string> }> = []
+  const unassignedNotes: NoteNode[] = []
+
+  for (const item of prepared) {
+    const itemWeight = signatureWeight(item.signature, frequency)
+    let bestClusterIndex = -1
+    let bestScore = 0
+
+    for (let index = 0; index < clusters.length; index += 1) {
+      const cluster = clusters[index]
+      const sharedWeight = sharedSignatureWeight(item.signature, cluster.signature, frequency)
+      const score = sharedWeight / Math.max(0.001, itemWeight)
+      if (score > bestScore) {
+        bestScore = score
+        bestClusterIndex = index
+      }
+    }
+
+    const shouldJoinCluster = bestClusterIndex >= 0 && (bestScore >= 0.3 || (bestScore >= 0.16 && item.signature.size <= 5))
+
+    if (!shouldJoinCluster) {
+      clusters.push({ notes: [item], signature: new Set(item.signature) })
+      continue
+    }
+
+    const cluster = clusters[bestClusterIndex]
+    cluster.notes.push(item)
+    for (const token of item.signature) {
+      cluster.signature.add(token)
+    }
+  }
+
+  const groupedClusters = clusters
+    .map((cluster, index) => {
+      const tokensByFrequency = new Map<string, { label: string; count: number; firstSeen: number }>()
+      cluster.notes.forEach((item, noteIndex) => {
+        for (const token of item.tokens) {
+          const current = tokensByFrequency.get(token.key)
+          if (current) {
+            current.count += 1
+          } else {
+            tokensByFrequency.set(token.key, { label: token.label, count: 1, firstSeen: noteIndex })
+          }
+        }
+      })
+
+      const rankedTokens = [...tokensByFrequency.values()]
+        .sort((left, right) => {
+          if (right.count !== left.count) {
+            return right.count - left.count
+          }
+          if (left.firstSeen !== right.firstSeen) {
+            return left.firstSeen - right.firstSeen
+          }
+          return right.label.length - left.label.length
+        })
+        .map((item) => ({ key: normalizeGroupToken(item.label), label: item.label }))
+
+      const firstNote = cluster.notes[0]?.note
+      const label = buildGroupLabel(rankedTokens, firstNote ? noteTitle(firstNote) : 'Gruppe')
+      const keywordTokens = formatGroupKeywords(rankedTokens)
+      const kindCounts: Record<NoteCategory, number> = { '': 0, Idea: 0, Task: 0 }
+
+      const groupedNotes = cluster.notes.map((item) => item.note).sort((left, right) => {
+        const rightTime = new Date(right.updatedAt).getTime()
+        const leftTime = new Date(left.updatedAt).getTime()
+        return rightTime - leftTime
+      })
+
+      for (const note of groupedNotes) {
+        kindCounts[note.category] = (kindCounts[note.category] ?? 0) + 1
+      }
+
+      return {
+        key: `group-${index}`,
+        label,
+        notes: groupedNotes,
+        keywords: keywordTokens,
+        kindCounts,
+      }
+    })
+    .filter((group) => {
+      if (group.notes.length > 1) {
+        return true
+      }
+      unassignedNotes.push(group.notes[0])
+      return false
+    })
+    .sort((left, right) => {
+      const leftTime = new Date(left.notes[0]?.updatedAt ?? 0).getTime()
+      const rightTime = new Date(right.notes[0]?.updatedAt ?? 0).getTime()
+      return rightTime - leftTime
+    })
+
+  if (unassignedNotes.length > 0) {
+    const kindCounts: Record<NoteCategory, number> = { '': 0, Idea: 0, Task: 0 }
+    for (const note of unassignedNotes) {
+      kindCounts[note.category] = (kindCounts[note.category] ?? 0) + 1
+    }
+    groupedClusters.unshift({
+      key: 'unassigned',
+      label: 'Nicht zugeteilt',
+      notes: unassignedNotes,
+      keywords: [],
+      kindCounts,
+    })
+  }
+
+  return groupedClusters
 }
 
 function safeText(value: unknown): string {
@@ -141,26 +437,6 @@ function isProcessingNote(note: NoteNode): boolean {
   return entries.some((entry) => entry.transcriptionState === 'processing')
 }
 
-function getBoardColumns(notes: NoteNode[]): BoardColumn[] {
-  const ideaNotes: NoteNode[] = []
-  const taskNotes: NoteNode[] = []
-  const neutralNotes: NoteNode[] = []
-
-  for (const note of notes) {
-    if (note.category === 'Idea') ideaNotes.push(note)
-    else if (note.category === 'Task') taskNotes.push(note)
-    else neutralNotes.push(note)
-  }
-
-  const columns: BoardColumn[] = [
-    { key: 'idea', label: 'Ideen', notes: ideaNotes, kind: 'idea' },
-    { key: 'task', label: 'To-Dos', notes: taskNotes, kind: 'task' },
-    { key: 'neutral', label: 'Notiz', notes: neutralNotes, kind: 'neutral' },
-  ]
-
-  return columns
-}
-
 export default function App() {
   const [activeTab, setActiveTab] = useState<TabKey>('capture')
   const [notes, setNotes] = useState<NoteNode[]>([])
@@ -173,6 +449,7 @@ export default function App() {
   const [playingId, setPlayingId] = useState('')
   const [deleteNoteTarget, setDeleteNoteTarget] = useState<NoteNode | null>(null)
   const [deleteAllOpen, setDeleteAllOpen] = useState(false)
+  const [boardGroups, setBoardGroups] = useState<BoardGroup[]>([])
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [routineStatus, setRoutineStatus] = useState('')
   const [settingsDraft, setSettingsDraft] = useState<SettingsDraft>({
@@ -182,9 +459,13 @@ export default function App() {
     summaryModel: '',
     followUpModel: '',
     language: '',
+    categoryPromptPrefix: '',
   })
   const [reportStatus, setReportStatus] = useState('')
   const [reportDownload, setReportDownload] = useState('')
+  const [llmLogs, setLlmLogs] = useState<LlmLogEntry[]>([])
+  const [llmLogsLoading, setLlmLogsLoading] = useState(false)
+  const [llmLogsError, setLlmLogsError] = useState('')
 
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const activeRecordingTarget = useRef<string | null>(null)
@@ -210,11 +491,15 @@ export default function App() {
   }
 
   const selectedNote = useMemo(() => notes.find((note) => note.id === selectedNoteId) ?? null, [notes, selectedNoteId])
-  const boardColumns = useMemo(() => getBoardColumns(notes), [notes])
+
+  const rebuildBoardGroups = (nextNotes: NoteNode[] = notes) => {
+    setBoardGroups(createBoardGroups(nextNotes))
+  }
 
   const reloadNotes = async () => {
     const response = await api.listNotes()
     setNotes(response.notes)
+    rebuildBoardGroups(response.notes)
     if (selectedNoteId && !response.notes.some((note) => note.id === selectedNoteId)) {
       setSelectedNoteId('')
     }
@@ -231,8 +516,23 @@ export default function App() {
       summaryModel: response.summaryModel,
       followUpModel: response.followUpModel,
       language: response.language,
+      categoryPromptPrefix: response.categoryPromptPrefix,
     })
     return response
+  }
+
+  const loadLlmLogs = async () => {
+    setLlmLogsLoading(true)
+    setLlmLogsError('')
+    try {
+      const response = await api.loadLlmLogs(80)
+      setLlmLogs(response.logs)
+    } catch (loadError) {
+      setLlmLogs([])
+      setLlmLogsError(loadError instanceof Error ? loadError.message : 'Das Protokoll konnte nicht geladen werden.')
+    } finally {
+      setLlmLogsLoading(false)
+    }
   }
 
   useEffect(() => {
@@ -244,6 +544,13 @@ export default function App() {
       }
     })()
   }, [])
+
+  useEffect(() => {
+    if (!settingsOpen) {
+      return
+    }
+    void loadLlmLogs()
+  }, [settingsOpen])
 
   useEffect(() => {
     const currentState = isAppHistoryState(window.history.state) ? window.history.state : null
@@ -385,9 +692,10 @@ export default function App() {
   }
 
   const runAllNotesRoutine = async () => {
-    const response = await runBusy('Alle Notizen werden neu analysiert …', async () => api.reanalyzeAllNotes())
+    const response = await runBusy('Kategorien werden neu erstellt …', async () => api.reanalyzeAllNotes())
     await reloadNotes()
-    setRoutineStatus(`Routine abgeschlossen: ${response.updatedNotes} Notizen aktualisiert${response.skippedNotes ? `, ${response.skippedNotes} übersprungen` : ''}`)
+    await loadLlmLogs()
+    setRoutineStatus(`Kategorien neu erstellt: ${response.updatedNotes} Notizen aktualisiert${response.skippedNotes ? `, ${response.skippedNotes} übersprungen` : ''}`)
   }
 
   const deleteSelectedNote = async () => {
@@ -445,6 +753,7 @@ export default function App() {
         summaryModel: settingsDraft.summaryModel.trim() || undefined,
         followUpModel: settingsDraft.followUpModel.trim() || undefined,
         language: settingsDraft.language.trim() || undefined,
+        categoryPromptPrefix: settingsDraft.categoryPromptPrefix,
       }),
     )
     setSettings(response)
@@ -456,6 +765,7 @@ export default function App() {
       summaryModel: response.summaryModel,
       followUpModel: response.followUpModel,
       language: response.language,
+      categoryPromptPrefix: response.categoryPromptPrefix,
     }))
   }
 
@@ -586,11 +896,12 @@ export default function App() {
 
               <section className="page-panel h-100 d-flex flex-column gap-3">
                 <BoardView
-                  columns={boardColumns}
+                  groups={boardGroups}
                   selectedNoteId={selectedNoteId}
                   onOpenNote={openNoteDetail}
                   onTogglePlayback={(id, url) => void playAudio(id, url)}
                   currentlyPlayingId={playingId}
+                  onCreateGroups={() => rebuildBoardGroups(notes)}
                 />
               </section>
             </div>
@@ -644,6 +955,10 @@ export default function App() {
             routineStatus={routineStatus}
             onRunAllNotesRoutine={() => void runAllNotesRoutine()}
             onDeleteAllNotes={() => setDeleteAllOpen(true)}
+            onRefreshLlmLogs={() => void loadLlmLogs()}
+            llmLogs={llmLogs}
+            llmLogsLoading={llmLogsLoading}
+            llmLogsError={llmLogsError}
           />
         )}
 
@@ -792,13 +1107,14 @@ function InboxView(props: {
 }
 
 function BoardView(props: {
-  columns: BoardColumn[]
+  groups: BoardGroup[]
   selectedNoteId: string
   onOpenNote: (noteId: string) => void
   onTogglePlayback: (id: string, url: string) => void
   currentlyPlayingId: string
+  onCreateGroups: () => void
 }) {
-  const hasNotes = props.columns.some((column) => column.notes.length > 0)
+  const hasNotes = props.groups.some((group) => group.notes.length > 0)
 
   return (
     <section className="board-view h-100 d-flex flex-column gap-3">
@@ -807,22 +1123,28 @@ function BoardView(props: {
           <div className="d-flex align-items-start justify-content-between gap-3">
             <div>
               <p className="small text-uppercase text-secondary fw-semibold mb-1">Board</p>
-              <h2 className="h3 mb-0">Kanban-Ordnung</h2>
+              <h2 className="h3 mb-0">Projektgruppen</h2>
             </div>
-            <span className="badge rounded-pill text-bg-light border text-secondary">{props.columns.reduce((count, column) => count + column.notes.length, 0)}</span>
+            <div className="d-flex flex-column align-items-end gap-2">
+              <button className="btn btn-outline-primary btn-sm" onClick={props.onCreateGroups} type="button">
+                <i className="bi bi-diagram-3-fill me-1" aria-hidden="true" />
+                Gruppen erstellen
+              </button>
+              <span className="badge rounded-pill text-bg-light border text-secondary">{props.groups.reduce((count, group) => count + group.notes.length, 0)}</span>
+            </div>
           </div>
-          <p className="text-secondary mb-0">Die Karten bleiben bewusst minimal: Summary plus Audio und Transkript.</p>
+          <p className="text-secondary mb-0">Mit dem Button werden ähnliche Notizen, Ideen und To-Dos automatisch zu Projektgruppen zusammengefasst; alles andere startet in „Nicht zugeteilt“.</p>
         </div>
       </div>
 
       {!hasNotes ? (
-        <div className="alert alert-light border shadow-sm mb-0">Noch keine kategorisierten Notizen vorhanden. Neue Notizen bleiben erst einmal weiß, bis die KI eine Kategorie erkennt.</div>
+        <div className="alert alert-light border shadow-sm mb-0">Noch keine Gruppen vorhanden. Neue Notizen landen zunächst in „Nicht zugeteilt“.</div>
       ) : (
         <div className="board-row flex-grow-1 d-flex gap-3 overflow-auto pb-2">
-          {props.columns.map((column) => (
-            <BoardColumnView
-              key={column.key}
-              column={column}
+          {props.groups.map((group) => (
+            <BoardGroupView
+              key={group.key}
+              group={group}
               onOpenNote={props.onOpenNote}
               onTogglePlayback={props.onTogglePlayback}
               currentlyPlayingId={props.currentlyPlayingId}
@@ -835,32 +1157,40 @@ function BoardView(props: {
   )
 }
 
-function BoardColumnView(props: {
-  column: BoardColumn
+function BoardGroupView(props: {
+  group: BoardGroup
   onOpenNote: (noteId: string) => void
   onTogglePlayback: (id: string, url: string) => void
   currentlyPlayingId: string
   selectedNoteId: string
 }) {
-  const { column } = props
-  const toneLabel = column.kind === 'idea' ? 'Idee' : column.kind === 'task' ? 'Aufgabe' : 'Notiz'
+  const { group } = props
+  const kindOptions = [
+    { key: '' as NoteCategory, label: 'Notiz' },
+    { key: 'Idea' as NoteCategory, label: 'Idee' },
+    { key: 'Task' as NoteCategory, label: 'To-Do' },
+  ]
+  const kindBadges = kindOptions.filter((item) => group.kindCounts[item.key] > 0)
 
   return (
     <article className="board-column card border-0 shadow-sm flex-shrink-0">
       <div className="card-body p-3 d-flex flex-column gap-3 h-100">
         <div className="d-flex align-items-start justify-content-between gap-2">
           <div>
-            <p className="small text-uppercase text-secondary fw-semibold mb-1">{toneLabel}</p>
-            <h3 className="h5 mb-0 board-column-title">{column.label}</h3>
+            <p className="small text-uppercase text-secondary fw-semibold mb-1">Gruppe</p>
+            <h3 className="h5 mb-1 board-column-title">{group.label}</h3>
+            {group.keywords.length > 0 ? <div className="board-group-keywords d-flex flex-wrap gap-1">{group.keywords.map((keyword) => <span key={keyword} className="badge rounded-pill text-bg-light border text-secondary">{keyword}</span>)}</div> : null}
           </div>
-          <span className="badge rounded-pill text-bg-light border text-secondary">{column.notes.length}</span>
+          <span className="badge rounded-pill text-bg-light border text-secondary">{group.notes.length}</span>
         </div>
 
+        {kindBadges.length > 0 ? <div className="board-group-kinds d-flex flex-wrap gap-1">{kindBadges.map((item) => <span key={`${item.key || 'neutral'}-${item.label}`} className="badge rounded-pill board-kind-badge">{item.label}</span>)}</div> : null}
+
         <div className="board-column-body vstack gap-3 flex-grow-1 overflow-auto pe-1">
-          {column.notes.length === 0 ? (
+          {group.notes.length === 0 ? (
             <div className="text-secondary small">Noch leer.</div>
           ) : (
-            column.notes.map((note) => (
+            group.notes.map((note) => (
               <StickyNoteCard
                 key={note.id}
                 note={note}
@@ -1078,7 +1408,16 @@ function SettingsModal(props: {
   routineStatus: string
   onRunAllNotesRoutine: () => void
   onDeleteAllNotes: () => void
+  onRefreshLlmLogs: () => void
+  llmLogs: LlmLogEntry[]
+  llmLogsLoading: boolean
+  llmLogsError: string
 }) {
+  const formatMessage = (text: string): string => {
+    const clean = text.trim()
+    return clean || '(leer)'
+  }
+
   return (
     <div className="overlay-backdrop" onClick={props.onClose}>
       <div className="modal-panel settings-panel" onClick={(event) => event.stopPropagation()}>
@@ -1157,6 +1496,21 @@ function SettingsModal(props: {
             </div>
           </div>
 
+          <div className="col-12">
+            <label className="form-label fw-semibold" htmlFor="settings-category-prefix">
+              Kategorie-Vortext
+            </label>
+            <textarea
+              id="settings-category-prefix"
+              className="form-control"
+              rows={5}
+              value={props.settingsDraft.categoryPromptPrefix}
+              onChange={(event) => props.setSettingsDraft((current) => ({ ...current, categoryPromptPrefix: event.target.value }))}
+              placeholder="Vortext für die KI-Kategorisierung …"
+            />
+            <div className="form-text">Dieser Text wird der KI zusammen mit der Zusammenfassung übergeben.</div>
+          </div>
+
         </div>
 
         <div className="d-flex flex-wrap gap-2 mt-4">
@@ -1164,7 +1518,7 @@ function SettingsModal(props: {
             Speichern
           </button>
           <button className="btn btn-outline-primary" onClick={props.onRunAllNotesRoutine} type="button">
-            Routine für alle Notizen
+            Kategorien neu erstellen
           </button>
           <button className="btn btn-outline-primary" onClick={props.onExportTechnicalReport} type="button">
             Tech-Report exportieren
@@ -1177,6 +1531,65 @@ function SettingsModal(props: {
         {props.routineStatus && <div className="alert alert-info mt-4 mb-0">{props.routineStatus}</div>}
         {props.reportStatus && <div className="alert alert-info mt-4 mb-0">{props.reportStatus}</div>}
         {props.reportDownload && <div className="small text-secondary mt-2">Zuletzt exportiert: {props.reportDownload}</div>}
+
+        <div className="mt-4">
+          <div className="d-flex flex-wrap align-items-start justify-content-between gap-2 mb-3">
+            <div>
+              <p className="small text-uppercase text-secondary fw-semibold mb-1">Protokoll</p>
+              <h4 className="h6 mb-0">LLM-Verlauf</h4>
+              <div className="small text-secondary">Alle KI-Anfragen mit Antwort oder Fehler.</div>
+            </div>
+            <button className="btn btn-outline-secondary btn-sm" onClick={props.onRefreshLlmLogs} type="button">
+              Aktualisieren
+            </button>
+          </div>
+
+          <div className="llm-log-stream">
+            {props.llmLogsLoading ? (
+              <div className="text-secondary small py-3">LLM-Protokoll wird geladen …</div>
+            ) : props.llmLogsError ? (
+              <div className="alert alert-warning mb-0">{props.llmLogsError}</div>
+            ) : props.llmLogs.length === 0 ? (
+              <div className="llm-log-empty text-secondary">Noch keine LLM-Interaktionen protokolliert.</div>
+            ) : (
+              props.llmLogs.map((entry) => (
+                <div key={entry.id} className="llm-log-card">
+                  <div className="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-2">
+                    <div className="fw-semibold">{entry.kind}</div>
+                    <div className="small text-secondary">{formatRelativeDate(entry.createdAt)}</div>
+                  </div>
+                  <div className="small text-secondary mb-2">
+                    {entry.provider} · {entry.model}
+                    {entry.noteTitle ? ` · ${entry.noteTitle}` : ''}
+                  </div>
+
+                  <div className="llm-chat-thread">
+                    {entry.messages.map((message, index) => (
+                      <div key={`${entry.id}-${index}`} className={`llm-chat-row llm-chat-row-${message.role}`}>
+                        <div className="llm-chat-meta">{message.role}</div>
+                        <div className={`llm-chat-bubble llm-chat-bubble-${message.role}`}>{formatMessage(message.content)}</div>
+                      </div>
+                    ))}
+
+                    {entry.response && (
+                      <div className="llm-chat-row llm-chat-row-assistant">
+                        <div className="llm-chat-meta">assistant</div>
+                        <div className="llm-chat-bubble llm-chat-bubble-assistant">{formatMessage(entry.response)}</div>
+                      </div>
+                    )}
+
+                    {entry.error && (
+                      <div className="llm-chat-row llm-chat-row-meta">
+                        <div className="llm-chat-meta">meta</div>
+                        <div className="llm-chat-bubble llm-chat-bubble-error">{formatMessage(entry.error)}</div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
       </div>
     </div>
   )
@@ -1285,23 +1698,19 @@ function TextNoteModal(props: {
 function RecordingOverlay(props: { levels: number[]; onStop: () => void }) {
   return (
     <div className="overlay-backdrop recording-backdrop">
-      <div className="recording-panel modal-panel">
-        <div className="d-flex align-items-center justify-content-between gap-3 mb-3">
-          <div>
-            <p className="small text-uppercase text-secondary fw-semibold mb-1">Aufnahme läuft</p>
-            <h3 className="h5 mb-0">Live-Equalizer</h3>
-          </div>
-          <button className="btn btn-outline-danger btn-sm" onClick={props.onStop} type="button">
-            <i className="bi bi-stop-fill me-1" aria-hidden="true" />
-            Stop
-          </button>
-        </div>
+      <div className="recording-panel modal-panel text-center">
+        <p className="small text-uppercase text-secondary fw-semibold mb-1">Aufnahme läuft</p>
+        <h3 className="h5 mb-3">Live-Equalizer</h3>
         <div className="recording-equalizer" aria-hidden="true">
           {Array.from({ length: 24 }).map((_, index) => {
             const level = props.levels[index] ?? props.levels[props.levels.length - 1] ?? 0.08
             return <span key={index} style={{ height: `${Math.max(16, Math.round(level * 100))}%` }} />
           })}
         </div>
+        <button className="btn btn-danger btn-lg rounded-pill recording-stop-btn" onClick={props.onStop} type="button">
+          <i className="bi bi-stop-fill me-2" aria-hidden="true" />
+          Aufnahme stoppen
+        </button>
         <p className="small text-secondary mb-0 mt-3">Sprich einfach weiter. Die Aufnahme endet erst, wenn du auf Stop tippst.</p>
       </div>
     </div>

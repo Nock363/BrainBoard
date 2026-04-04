@@ -42,6 +42,16 @@ class BrainSessionStore:
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS llm_logs (
+                    id TEXT PRIMARY KEY,
+                    payload TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_llm_logs_created_at ON llm_logs(created_at DESC)")
 
     def list_notes(self) -> list[dict[str, Any]]:
         with self._lock, self._connect() as conn:
@@ -72,6 +82,33 @@ class BrainSessionStore:
                 (note["id"], payload, note["createdAt"], note["updatedAt"]),
             )
         return note
+
+    def save_llm_log(self, log_entry: dict[str, Any]) -> dict[str, Any]:
+        payload = json.dumps(log_entry, ensure_ascii=False, indent=2)
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO llm_logs (id, payload, created_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    payload = excluded.payload,
+                    created_at = excluded.created_at
+                """,
+                (log_entry["id"], payload, log_entry["createdAt"]),
+            )
+        return log_entry
+
+    def list_llm_logs(self, limit: int = 100) -> list[dict[str, Any]]:
+        safe_limit = max(1, min(int(limit or 100), 500))
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                "SELECT payload FROM llm_logs ORDER BY created_at DESC LIMIT ?",
+                (safe_limit,),
+            ).fetchall()
+        logs: list[dict[str, Any]] = []
+        for row in rows:
+            logs.append(json.loads(row["payload"]))
+        return logs
 
     def delete_note(self, note_id: str) -> None:
         with self._lock, self._connect() as conn:
@@ -107,4 +144,3 @@ class BrainSessionStore:
         file_path = target_dir / f"{entry_id}{clean_suffix}"
         file_path.write_bytes(blob)
         return str(file_path.relative_to(self.media_dir)).replace("\\", "/")
-

@@ -33,6 +33,7 @@ export interface SettingsResponse {
   summaryModel: string
   followUpModel: string
   language: string
+  categoryPromptPrefix: string
   dataDir: string
   mediaDir: string
 }
@@ -49,6 +50,27 @@ export interface ReportResponse {
   ok: boolean
   reportMarkdown: string
   fileName: string
+}
+
+export interface LlmLogMessage {
+  role: 'system' | 'user' | 'assistant' | 'meta'
+  content: string
+}
+
+export interface LlmLogEntry {
+  id: string
+  createdAt: string
+  provider: string
+  kind: string
+  model: string
+  noteTitle: string
+  messages: LlmLogMessage[]
+  response: string
+  error: string
+}
+
+export interface LlmLogsResponse {
+  logs: LlmLogEntry[]
 }
 
 export interface RoutineResponse {

@@ -2,11 +2,20 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime, timezone
 from collections import Counter
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
+from uuid import uuid4
 
 import requests
+
+
+DEFAULT_CATEGORY_PROMPT_PREFIX = (
+    "Bitte analysiere folgenden Text auf die Art des Textes. "
+    "Es gibt drei Arten: <Idee>, <To-Do> oder <Notiz>. "
+    "Antworte nur mit genau einer dieser drei Ausgaben."
+)
 
 
 STOP_WORDS = {
@@ -52,12 +61,99 @@ STOP_WORDS = {
 CATEGORY_ALIASES = {
     "idea": "Idea",
     "ideen": "Idea",
+    "idee": "Idea",
     "suggestion": "Idea",
     "task": "Task",
     "to-do": "Task",
+    "to do": "Task",
     "todo": "Task",
     "aufgabe": "Task",
+    "notiz": "",
 }
+
+LLMLogCallback = Callable[[dict[str, Any]], None]
+
+_llm_log_callback: LLMLogCallback | None = None
+
+
+def set_llm_logger(callback: LLMLogCallback | None) -> None:
+    global _llm_log_callback
+    _llm_log_callback = callback
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def _make_llm_log_entry(kind: str, model: str, messages: list[dict[str, str]], *, note_title: str = "") -> dict[str, Any]:
+    return {
+        "id": f"llm_{uuid4().hex[:12]}",
+        "createdAt": _utc_now(),
+        "provider": "openai",
+        "kind": kind,
+        "model": model,
+        "noteTitle": _clean_text(note_title),
+        "messages": messages,
+    }
+
+
+def _emit_llm_log(entry: dict[str, Any]) -> None:
+    if _llm_log_callback is None:
+        return
+    try:
+        _llm_log_callback(entry)
+    except Exception:
+        pass
+
+
+def _normalize_messages(messages: list[dict[str, Any]]) -> list[dict[str, str]]:
+    normalized: list[dict[str, str]] = []
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        role = _clean_text(message.get("role", "")) or "meta"
+        content = message.get("content", "")
+        if isinstance(content, list):
+            parts: list[str] = []
+            for part in content:
+                if isinstance(part, dict):
+                    for key in ("text", "value", "output_text"):
+                        value = part.get(key)
+                        if isinstance(value, str) and value.strip():
+                            parts.append(value.strip())
+                            break
+                else:
+                    text = _clean_text(part)
+                    if text:
+                        parts.append(text)
+            content_text = "\n".join(parts).strip()
+        else:
+            content_text = _clean_text(content)
+        normalized.append({"role": role, "content": content_text})
+    return normalized
+
+
+def _format_summary_log(summary_headline: str, summary: str) -> str:
+    headline = _clean_text(summary_headline) or "(ohne Überschrift)"
+    body = _clean_text(summary) or "(leer)"
+    return f"summaryHeadline: {headline}\nsummary: {body}"
+
+
+def _format_category_log(category: str) -> str:
+    display_category = {
+        "Idea": "Idee",
+        "Task": "To-Do",
+        "": "Notiz",
+    }.get(category, category or "Notiz")
+    return f"category: {display_category}"
+
+
+def _format_question_log(question: str) -> str:
+    return f"question: {_clean_text(question) or '(leer)'}"
+
+
+def _format_transcription_log(text: str) -> str:
+    return f"transcript: {_clean_text(text) or '(leer)'}"
 
 
 def _clean_text(text: str) -> str:
@@ -68,6 +164,7 @@ def _normalize_category(value: Any) -> str:
     text = _clean_text(str(value or "")).lower()
     if not text:
         return ""
+    text = text.strip("<>")
     normalized = text.replace(" ", "")
     return CATEGORY_ALIASES.get(text, CATEGORY_ALIASES.get(normalized, ""))
 
@@ -117,17 +214,6 @@ def _extract_action_items(text: str, limit: int = 5) -> list[str]:
     return result
 
 
-def _infer_category_from_text(text: str) -> str:
-    lowered = _clean_text(text).lower()
-    if not lowered:
-        return ""
-    if re.search(r"\b(todo|aufgabe|erledigen|machen|soll|muss|bitte|deadline|termin)\b", lowered):
-        return "Task"
-    if re.search(r"\b(idee|brainstorm|konzept|vorschlag|skizze|inspiriert|würde|wuerde)\b", lowered):
-        return "Idea"
-    return ""
-
-
 def infer_local_summary(text: str) -> dict[str, Any]:
     clean = _clean_text(text)
     if not clean:
@@ -145,12 +231,6 @@ def infer_local_summary(text: str) -> dict[str, Any]:
         "summaryHeadline": headline,
         "summary": summary,
     }
-
-
-def infer_local_category(text: str) -> str:
-    return _infer_category_from_text(text)
-
-
 def _openai_headers(api_key: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {api_key.strip()}", "Content-Type": "application/json"}
 
@@ -239,12 +319,6 @@ def _openai_transcribe(
     return text
 
 
-def infer_local_interpretation(text: str) -> dict[str, Any]:
-    summary = infer_local_summary(text)
-    summary["category"] = infer_local_category(text)
-    return summary
-
-
 def _build_summary_schema() -> dict[str, Any]:
     return {
         "type": "object",
@@ -292,26 +366,36 @@ def interpret_text_note(api_key: str, model: str, text: str) -> dict[str, Any]:
         ],
         "text": {"format": {"type": "json_schema", "name": "note_summary", "schema": _build_summary_schema()}},
     }
+    log_entry = _make_llm_log_entry("Zusammenfassung", payload["model"], _normalize_messages(payload["input"]))
     try:
         response = _openai_responses(clean_key, payload)
         raw = _extract_output_text(response)
         parsed = json.loads(raw)
         fallback = infer_local_summary(clean_text)
-        return {
+        result = {
             "summaryHeadline": _clean_text(str(parsed.get("summaryHeadline", ""))) or fallback["summaryHeadline"],
             "summary": _clean_text(str(parsed.get("summary", ""))) or fallback["summary"],
         }
+        log_entry["response"] = _format_summary_log(result["summaryHeadline"], result["summary"])
+        _emit_llm_log(log_entry)
+        return result
     except Exception:
+        log_entry["error"] = "Konnte Zusammenfassung nicht abrufen; lokale Fallback-Zusammenfassung verwendet."
+        _emit_llm_log(log_entry)
         return infer_local_summary(clean_text)
 
 
-def classify_note_category(api_key: str, model: str, summary_text: str) -> str:
+def classify_note_category(
+    api_key: str,
+    model: str,
+    prompt_prefix: str,
+    summary_text: str,
+) -> str:
     clean_key = api_key.strip()
     clean_summary = _clean_text(summary_text)
-    if not clean_summary:
+    clean_prefix = _clean_text(prompt_prefix) or DEFAULT_CATEGORY_PROMPT_PREFIX
+    if not clean_key or not clean_summary:
         return ""
-    if not clean_key:
-        return infer_local_category(clean_summary)
 
     payload = {
         "model": model.strip() or "gpt-4o-mini",
@@ -319,22 +403,34 @@ def classify_note_category(api_key: str, model: str, summary_text: str) -> str:
             {
                 "role": "system",
                 "content": (
-                    "Du klassifizierst eine deutsche Notiz-Zusammenfassung in genau eine von drei Kategorien: Idea, Task oder leer. "
+                    "Du klassifizierst eine deutsche BrainSession-Notiz in genau eine von drei Kategorien: Idee, To-Do oder Notiz. "
                     "Antworte nur als JSON mit category. "
-                    "category muss genau Idea oder Task sein, oder leer bleiben wenn es nicht sicher erkennbar ist."
+                    "Nutze die vorgegebene Anleitung und den anschliessenden Notiztext. "
+                    "Wenn etwas erkennbar geplant, vorgeschlagen oder konzeptionell ist, waehle Idee. "
+                    "Wenn es eine konkrete Aufgabe, ein naechster Schritt oder ein To-Do ist, waehle To-Do. "
+                    "Wenn weder Idee noch To-Do passt, waehle Notiz."
                 ),
             },
-            {"role": "user", "content": f"Zusammenfassung:\n{clean_summary}"},
+            {
+                "role": "user",
+                "content": f"{clean_prefix}\n\nText der Notiz (Zusammenfassung):\n{clean_summary}",
+            },
         ],
         "text": {"format": {"type": "json_schema", "name": "note_category", "schema": _build_category_schema()}},
     }
+    log_entry = _make_llm_log_entry("Kategorie", payload["model"], _normalize_messages(payload["input"]))
     try:
         response = _openai_responses(clean_key, payload)
         raw = _extract_output_text(response)
         parsed = json.loads(raw)
-        return _normalize_category(parsed.get("category")) or infer_local_category(clean_summary)
+        result = _normalize_category(parsed.get("category"))
+        log_entry["response"] = _format_category_log(result)
+        _emit_llm_log(log_entry)
+        return result
     except Exception:
-        return infer_local_category(clean_summary)
+        log_entry["error"] = "Konnte Kategorie nicht klassifizieren."
+        _emit_llm_log(log_entry)
+        return ""
 
 
 def summarize_note_timeline(
@@ -386,6 +482,7 @@ def summarize_note_timeline(
             }
         },
     }
+    log_entry = _make_llm_log_entry("Zusammenfassung", payload["model"], _normalize_messages(payload["input"]), note_title=note_title)
     try:
         response = _openai_responses(clean_key, payload)
         raw = _extract_output_text(response)
@@ -394,16 +491,23 @@ def summarize_note_timeline(
         if not summary:
             raise ValueError("No summary returned")
         summary_headline = _clean_text(str(parsed.get("summaryHeadline", "")))
-        return {
+        result = {
             "summaryHeadline": summary_headline,
             "summary": summary,
         }
+        log_entry["response"] = _format_summary_log(result["summaryHeadline"], result["summary"])
+        _emit_llm_log(log_entry)
+        return result
     except Exception:
         joined = " ".join(entries)
-        return {
+        fallback = {
             "summaryHeadline": _clean_text(note_title)[:72] or "Neue Notiz",
             "summary": entries[-1] if entries else joined,
         }
+        log_entry["error"] = "Konnte Verlauf nicht zusammenfassen; lokaler Fallback verwendet."
+        log_entry["response"] = _format_summary_log(fallback["summaryHeadline"], fallback["summary"])
+        _emit_llm_log(log_entry)
+        return fallback
 
 
 def generate_follow_up_question(
@@ -456,19 +560,28 @@ def generate_follow_up_question(
             }
         },
     }
+    log_entry = _make_llm_log_entry("Folgefrage", payload["model"], _normalize_messages(payload["input"]), note_title=note_title)
     try:
         response = _openai_responses(clean_key, payload)
         raw = _extract_output_text(response)
         parsed = json.loads(raw)
         question = _clean_text(str(parsed.get("question", "")))
-        if not question:
-            return ""
+        log_entry["response"] = _format_question_log(question)
         normalized_existing = {normalize_question_key(item) for item in existing_questions}
         normalized_excluded = {normalize_question_key(item) for item in excluded_questions + [dismissed_question]}
-        if normalize_question_key(question) in normalized_existing | normalized_excluded:
+        if not question:
+            log_entry["error"] = "Die KI hat keine Folgefrage geliefert."
+            _emit_llm_log(log_entry)
             return ""
+        if normalize_question_key(question) in normalized_existing | normalized_excluded:
+            log_entry["error"] = "Die KI hat eine bereits bekannte oder ausgeschlossene Frage vorgeschlagen."
+            _emit_llm_log(log_entry)
+            return ""
+        _emit_llm_log(log_entry)
         return question
     except Exception:
+        log_entry["error"] = "Konnte keine Folgefrage erzeugen."
+        _emit_llm_log(log_entry)
         return ""
 
 
@@ -481,7 +594,26 @@ def transcribe_audio(
 ) -> str:
     if not api_key.strip():
         raise ValueError("OpenAI API key fehlt")
-    return _openai_transcribe(api_key, audio_path, model=model, language=language, prompt=prompt)
+    log_entry = _make_llm_log_entry(
+        "Transkription",
+        model.strip() or "whisper-1",
+        [
+            {"role": "system", "content": _clean_text(prompt) or "Transkribiere das Audio als deutsche Notiz."},
+            {
+                "role": "user",
+                "content": f"Datei: {audio_path.name}\nSprache: {language.strip() or 'de'}",
+            },
+        ],
+    )
+    try:
+        transcript = _openai_transcribe(api_key, audio_path, model=model, language=language, prompt=prompt)
+        log_entry["response"] = _format_transcription_log(transcript)
+        _emit_llm_log(log_entry)
+        return transcript
+    except Exception:
+        log_entry["error"] = "Konnte Audio nicht transkribieren."
+        _emit_llm_log(log_entry)
+        raise
 
 
 def infer_tags(text: str) -> list[str]:

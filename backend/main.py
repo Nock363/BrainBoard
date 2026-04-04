@@ -14,11 +14,12 @@ from fastapi.responses import HTMLResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from backend.ai import (
-    infer_local_interpretation,
     classify_note_category,
     interpret_text_note,
+    set_llm_logger,
     summarize_note_timeline,
     transcribe_audio,
+    DEFAULT_CATEGORY_PROMPT_PREFIX,
 )
 from backend.config import get_config
 from backend.models import (
@@ -28,6 +29,7 @@ from backend.models import (
     NoteResponse,
     NotesResponse,
     NoteTimelineEntry,
+    LlmLogsResponse,
     ReportResponse,
     RoutineResponse,
     SettingsResponse,
@@ -58,41 +60,6 @@ def clean_text_value(value: object) -> str:
     return text
 
 
-def guess_note_category(text: str) -> str:
-    lowered = clean_text_value(text).lower()
-    if not lowered:
-        return ""
-
-    idea_patterns = (
-        r"\bidee\b",
-        r"\bkonzept\b",
-        r"\bvorschlag\b",
-        r"\bbrainstorm\b",
-        r"\bvorstellung\b",
-        r"\bkönnte\b",
-        r"\bkoennte\b",
-        r"\bwäre\b",
-        r"\bwaere\b",
-        r"\bgedanke\b",
-        r"\bstory\b",
-    )
-    task_patterns = (
-        r"\baufgabe\b",
-        r"\bto[- ]?do\b",
-        r"\berledigen\b",
-        r"\bmuss\b",
-        r"\bsoll\b",
-        r"\bbitte\b",
-        r"\bdeadline\b",
-        r"\btermin\b",
-    )
-    if any(re.search(pattern, lowered, re.IGNORECASE) for pattern in idea_patterns):
-        return "Idea"
-    if any(re.search(pattern, lowered, re.IGNORECASE) for pattern in task_patterns):
-        return "Task"
-    return ""
-
-
 def resolve_note_category(note: dict[str, object]) -> str:
     if "manualCategory" in note:
         return validate_note_category(clean_text_value(note.get("manualCategory")))
@@ -100,31 +67,7 @@ def resolve_note_category(note: dict[str, object]) -> str:
     category = clean_text_value(note.get("category"))
     if category in {"Idea", "Task"}:
         return category
-
-    title = clean_text_value(note.get("title"))
-    summary_headline = clean_text_value(note.get("summaryHeadline"))
-    summary = clean_text_value(note.get("summary"))
-    raw_transcript = clean_text_value(note.get("rawTranscript"))
-
-    for seed_text in (title, summary_headline, summary, raw_transcript):
-        guessed = guess_note_category(seed_text)
-        if guessed:
-            return guessed
-
-    seed_text = " ".join(
-        part
-        for part in (
-            title,
-            summary_headline,
-            summary,
-            raw_transcript,
-        )
-        if part
-    )
-    if not seed_text:
-        return ""
-    inferred = infer_local_interpretation(seed_text).get("category", "")
-    return inferred if inferred in {"Idea", "Task"} else guess_note_category(seed_text)
+    return ""
 
 
 def validate_note_category(category: str) -> str:
@@ -186,7 +129,12 @@ def default_settings(config) -> dict[str, object]:
         "summaryModel": config.summary_model,
         "followUpModel": config.follow_up_model,
         "language": config.language,
+        "categoryPromptPrefix": DEFAULT_CATEGORY_PROMPT_PREFIX,
     }
+
+
+def category_prompt_prefix_from(settings: dict[str, object]) -> str:
+    return clean_text_value(settings.get("categoryPromptPrefix")) or DEFAULT_CATEGORY_PROMPT_PREFIX
 
 
 def build_note_from_text(
@@ -194,12 +142,12 @@ def build_note_from_text(
     *,
     api_key: str,
     summary_model: str,
+    category_prompt_prefix: str,
     create_entry_kind: str = "text",
     audio_relative_path: str = "",
     transcription_state: str = "done",
     transcription_error: str = "",
 ) -> dict[str, object]:
-    guessed_category = guess_note_category(text)
     summary_result = interpret_text_note(api_key, summary_model, text)
     note_id = make_note_id()
     entry_id = make_entry_id()
@@ -216,14 +164,7 @@ def build_note_from_text(
     }
     headline = clean_text_value(summary_result.get("summaryHeadline")) or clean_text_value(summary_result.get("title")) or "Neue Notiz"
     summary_text = clean_text_value(summary_result.get("summary")) or text.strip()
-    category = guessed_category or classify_note_category(api_key, summary_model, summary_text) or resolve_note_category(
-        {
-            "title": headline,
-            "summaryHeadline": headline,
-            "summary": summary_text,
-            "rawTranscript": text,
-        }
-    )
+    category = classify_note_category(api_key, summary_model, category_prompt_prefix, summary_text)
     return {
         "id": note_id,
         "title": headline,
@@ -243,6 +184,7 @@ def reanalyze_note(
     *,
     api_key: str,
     summary_model: str,
+    category_prompt_prefix: str,
 ) -> dict[str, object]:
     transcripts = [str(item.get("transcript", "")).strip() for item in note.get("entries", []) if isinstance(item, dict) and str(item.get("transcript", "")).strip()]
     if not transcripts:
@@ -251,6 +193,7 @@ def reanalyze_note(
         note,
         api_key=api_key,
         summary_model=summary_model,
+        category_prompt_prefix=category_prompt_prefix,
     )
     return note
 
@@ -260,6 +203,7 @@ def recompute_summary(
     *,
     api_key: str,
     summary_model: str,
+    category_prompt_prefix: str,
 ) -> dict[str, object]:
     entries = [str(entry.get("transcript", "")).strip() for entry in note.get("entries", []) if isinstance(entry, dict)]
     entries = [item for item in entries if item]
@@ -275,13 +219,14 @@ def recompute_summary(
     note["summary"] = clean_text_value(summary_result.get("summary")) or clean_text_value(note.get("summary"))
     note["title"] = summary_headline
     note["summaryHeadline"] = summary_headline
-    note["category"] = classify_note_category(api_key, summary_model, note["summary"]) or resolve_note_category(note)
+    note["category"] = classify_note_category(api_key, summary_model, category_prompt_prefix, note["summary"])
     note["rawTranscript"] = "\n".join(entries)
     return note
 
 
 config = get_config()
 store = BrainSessionStore(config.data_dir, config.db_path, config.settings_path, config.media_dir)
+set_llm_logger(store.save_llm_log)
 
 app = FastAPI(title="BrainSession PWA", version="0.1.0")
 app.add_middleware(
@@ -312,6 +257,7 @@ def get_settings() -> SettingsResponse:
         summaryModel=str(current.get("summaryModel", config.summary_model)),
         followUpModel=str(current.get("followUpModel", config.follow_up_model)),
         language=str(current.get("language", config.language)),
+        categoryPromptPrefix=category_prompt_prefix_from(current),
         dataDir=str(config.data_dir),
         mediaDir=str(config.media_dir),
     )
@@ -333,6 +279,8 @@ def update_settings(payload: UpdateSettingsRequest) -> SettingsResponse:
         current["followUpModel"] = payload.followUpModel.strip()
     if payload.language is not None and payload.language.strip():
         current["language"] = payload.language.strip()
+    if payload.categoryPromptPrefix is not None:
+        current["categoryPromptPrefix"] = payload.categoryPromptPrefix.strip() or DEFAULT_CATEGORY_PROMPT_PREFIX
     store.save_settings(current)
     return get_settings()
 
@@ -340,6 +288,11 @@ def update_settings(payload: UpdateSettingsRequest) -> SettingsResponse:
 @app.get("/api/notes", response_model=NotesResponse)
 def list_notes() -> NotesResponse:
     return NotesResponse(notes=[note_to_model(note, lambda rel: f"/media/{rel}") for note in store.list_notes()])
+
+
+@app.get("/api/llm-logs", response_model=LlmLogsResponse)
+def list_llm_logs(limit: int = 100) -> LlmLogsResponse:
+    return LlmLogsResponse(logs=store.list_llm_logs(limit))
 
 
 @app.get("/api/notes/{note_id}", response_model=NoteResponse)
@@ -359,6 +312,7 @@ def create_text_note(payload: CreateTextNoteRequest) -> NoteResponse:
         payload.text,
         api_key=api_key,
         summary_model=str(current_settings.get("summaryModel") or settings.summaryModel),
+        category_prompt_prefix=category_prompt_prefix_from(current_settings),
     )
     store.save_note(note)
     return NoteResponse(note=note_to_model(note, lambda rel: f"/media/{rel}"))
@@ -429,6 +383,7 @@ async def create_voice_note(
                 transcript,
                 api_key=api_key,
                 summary_model=summary_model,
+                category_prompt_prefix=category_prompt_prefix_from(current_settings),
                 create_entry_kind="voice",
                 audio_relative_path=relative_path,
             )
@@ -498,6 +453,7 @@ def append_text_to_note(note_id: str, payload: AppendTextRequest) -> NoteRespons
                 note,
                 api_key=api_key,
                 summary_model=summary_model,
+                category_prompt_prefix=category_prompt_prefix_from(current_settings),
             )
         except Exception:
             pass
@@ -507,13 +463,14 @@ def append_text_to_note(note_id: str, payload: AppendTextRequest) -> NoteRespons
                 note,
                 api_key="",
                 summary_model=summary_model,
+                category_prompt_prefix=category_prompt_prefix_from(current_settings),
             )
         except Exception:
             summary_result = interpret_text_note("", summary_model, "\n".join(transcripts))
             note["summaryHeadline"] = summary_result["summaryHeadline"]
             note["summary"] = summary_result["summary"]
             note["title"] = summary_result["summaryHeadline"]
-            note["category"] = classify_note_category("", summary_model, summary_result["summary"])
+            note["category"] = classify_note_category("", summary_model, category_prompt_prefix_from(current_settings), summary_result["summary"])
     note["updatedAt"] = utc_now()
     store.save_note(note)
     return NoteResponse(note=note_to_model(note, lambda rel: f"/media/{rel}"))
@@ -534,6 +491,7 @@ def regenerate_summary(note_id: str) -> NoteResponse:
         note,
         api_key=api_key,
         summary_model=summary_model,
+        category_prompt_prefix=category_prompt_prefix_from(current_settings),
     )
     note["updatedAt"] = utc_now()
     store.save_note(note)
@@ -574,10 +532,12 @@ def reanalyze_all_notes() -> RoutineResponse:
             skipped_notes += 1
             continue
         try:
+            note.pop("manualCategory", None)
             note = reanalyze_note(
                 note,
                 api_key=api_key,
                 summary_model=summary_model,
+                category_prompt_prefix=category_prompt_prefix_from(current_settings),
             )
             note["updatedAt"] = utc_now()
             store.save_note(note)

@@ -36,6 +36,7 @@ class SettingsResponse(BaseModel):
     summaryModel: str
     followUpModel: str
     language: str
+    categoryPromptPrefix: str
     dataDir: str
     mediaDir: str
 
@@ -47,6 +48,7 @@ class UpdateSettingsRequest(BaseModel):
     summaryModel: str | None = None
     followUpModel: str | None = None
     language: str | None = None
+    categoryPromptPrefix: str | None = None
 
 
 class CreateTextNoteRequest(BaseModel):
@@ -85,6 +87,27 @@ class ReportResponse(BaseModel):
     ok: bool
     reportMarkdown: str
     fileName: str
+
+
+class LlmLogMessage(BaseModel):
+    role: Literal["system", "user", "assistant", "meta"]
+    content: str
+
+
+class LlmLogEntry(BaseModel):
+    id: str
+    createdAt: str
+    provider: str
+    kind: str
+    model: str
+    noteTitle: str = ""
+    messages: list[LlmLogMessage] = Field(default_factory=list)
+    response: str = ""
+    error: str = ""
+
+
+class LlmLogsResponse(BaseModel):
+    logs: list[LlmLogEntry]
 
 
 class RoutineResponse(BaseModel):

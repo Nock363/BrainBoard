@@ -1,4 +1,5 @@
 import type {
+  LlmLogsResponse,
   NoteResponse,
   NotesResponse,
   ReportResponse,
@@ -46,6 +47,9 @@ export const api = {
   async loadSettings(): Promise<SettingsResponse> {
     return requestJson('/api/settings')
   },
+  async loadLlmLogs(limit = 100): Promise<LlmLogsResponse> {
+    return requestJson(`/api/llm-logs?limit=${encodeURIComponent(String(limit))}`)
+  },
   async saveSettings(payload: {
     openAiApiKey?: string
     openAiModel?: string
@@ -53,6 +57,7 @@ export const api = {
     summaryModel?: string
     followUpModel?: string
     language?: string
+    categoryPromptPrefix?: string
   }): Promise<SettingsResponse> {
     return requestJson('/api/settings', {
       method: 'PUT',
