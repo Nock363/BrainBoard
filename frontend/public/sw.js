@@ -28,6 +28,10 @@ self.addEventListener('fetch', (event) => {
     return
   }
 
+  if (url.pathname.startsWith('/desktop')) {
+    return
+  }
+
   if (url.pathname.startsWith('/api/')) {
     return
   }

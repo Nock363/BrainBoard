@@ -7,6 +7,7 @@ Standalone BrainSession web/PWA replacement with:
 - super-clean sticky notes with details only on click
 - AI categorization into Idea, Task, and Research
 - project-tag based Kanban columns
+- a separate desktop view at `/desktop` with a pin-board layout and left-side capture rail
 - timeline entries with voice/text distinction
 - note summaries with dynamic sections and follow-up review
 - delete confirmations and loading overlays
@@ -57,6 +58,8 @@ cd ..
 ```
 
 The app serves on `http://localhost:8000`.
+
+The desktop layout is available at `http://localhost:8000/desktop` and shares the same backend and stored notes.
 
 ## HTTPS install mode
 

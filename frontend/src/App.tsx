@@ -737,6 +737,14 @@ export default function App() {
     await updateNotesFromResponse(response)
   }
 
+  const reanalyzeSelectedNoteCategory = async () => {
+    if (!selectedNote) {
+      return
+    }
+    const response = await runBusy('Kategorie wird neu ermittelt …', async () => api.analyzeNote(selectedNote.id))
+    await updateNotesFromResponse(response)
+  }
+
   const deleteAllNotes = async () => {
     await runBusy('Alle Notizen werden gelöscht …', async () => api.deleteAllNotes())
     setDeleteAllOpen(false)
@@ -840,6 +848,233 @@ export default function App() {
 
   const noteCount = notes.length
   const captureStartEnabled = !busy && !recorder.isRecording
+  const isDesktopMode = typeof window !== 'undefined' && (window.location.pathname === '/desktop' || window.location.pathname.startsWith('/desktop/'))
+
+  if (isDesktopMode) {
+    const categoryCounts = notes.reduce(
+      (accumulator, note) => {
+        accumulator[note.category || ''] += 1
+        return accumulator
+      },
+      { '': 0, Idea: 0, Task: 0 } as Record<NoteCategory, number>,
+    )
+
+    return (
+      <div className="bootstrap-app text-body desktop-mode">
+        <div className="container-fluid desktop-shell py-3 py-xl-4 d-flex flex-column gap-3">
+          <header className="desktop-topbar card border-0 shadow-sm">
+            <div className="card-body p-3 p-lg-4 d-flex flex-column flex-xl-row align-items-start align-items-xl-center justify-content-between gap-3">
+              <div className="desktop-top-copy">
+                <p className="small text-uppercase text-secondary fw-semibold mb-1">Desktop-Pinnwand</p>
+                <h1 className="desktop-title mb-1">BrainSession</h1>
+                <p className="desktop-subtitle mb-0">Getrennte Desktop-Ansicht mit derselben Datenbasis wie die PWA.</p>
+              </div>
+              <div className="d-flex flex-wrap align-items-center gap-2">
+                <span className="badge rounded-pill text-bg-light border text-secondary">
+                  <i className="bi bi-journal-text me-1" aria-hidden="true" />
+                  {noteCount} Notizen
+                </span>
+                <button className="btn btn-outline-secondary btn-sm" type="button" onClick={() => window.location.assign('/')}>
+                  <i className="bi bi-phone me-1" aria-hidden="true" />
+                  PWA öffnen
+                </button>
+                <button className="btn btn-outline-secondary btn-sm" type="button" onClick={() => setSettingsOpen(true)} aria-label="Einstellungen öffnen">
+                  <i className="bi bi-gear-fill" aria-hidden="true" />
+                </button>
+              </div>
+            </div>
+          </header>
+
+          <div className="desktop-layout flex-grow-1 d-flex gap-3 min-h-0">
+            <aside className="desktop-sidebar card border-0 shadow-sm">
+              <div className="card-body p-3 p-lg-4 d-flex flex-column gap-3 h-100">
+                <div className="desktop-sidebar-header d-flex flex-column gap-2">
+                  <span className="badge rounded-pill text-bg-light border text-secondary align-self-start">Voice first</span>
+                  <h2 className="h4 mb-0">Notizen aufnehmen</h2>
+                  <p className="text-secondary mb-0">Die Aufnahme sitzt links, damit die Pinnwand frei bleibt.</p>
+                </div>
+
+                <div className="desktop-record-zone text-center d-flex flex-column align-items-center gap-3">
+                  <button
+                    className="btn btn-primary rounded-circle desktop-record-button d-inline-flex align-items-center justify-content-center"
+                    onClick={() => void startVoiceCapture()}
+                    type="button"
+                    disabled={recorder.isRecording || !captureStartEnabled}
+                    aria-label={recorder.isRecording ? 'Aufnahme läuft' : 'Sprachnotiz aufnehmen'}
+                  >
+                    <i className={`bi ${recorder.isRecording ? 'bi-stop-fill' : 'bi-mic-fill'} desktop-record-icon`} aria-hidden="true" />
+                  </button>
+                  <div>
+                    <p className="h5 mb-1">Sprachnotiz aufnehmen</p>
+                    <p className="text-secondary mb-0">Eine große Taste, daneben Textnotizen und Einstellungen.</p>
+                  </div>
+                  {recorder.microphoneHint ? <div className="alert alert-warning mb-0 py-2 w-100">{recorder.microphoneHint}</div> : null}
+                </div>
+
+                <div className="desktop-quick-actions d-grid gap-2">
+                  <button className="btn btn-outline-secondary" onClick={() => setTextNoteOpen(true)} type="button">
+                    <i className="bi bi-pencil-square me-1" aria-hidden="true" />
+                    Textnotiz
+                  </button>
+                  <button className="btn btn-outline-primary" onClick={() => setSettingsOpen(true)} type="button">
+                    <i className="bi bi-gear-fill me-1" aria-hidden="true" />
+                    Einstellungen
+                  </button>
+                  <button className="btn btn-outline-primary" onClick={() => void reloadNotes()} type="button">
+                    <i className="bi bi-arrow-clockwise me-1" aria-hidden="true" />
+                    Pinnwand aktualisieren
+                  </button>
+                </div>
+
+                <div className="desktop-stats card border-0 shadow-sm mt-auto">
+                  <div className="card-body p-3 d-flex flex-column gap-3">
+                    <div className="d-flex align-items-center justify-content-between gap-2">
+                      <h3 className="h6 mb-0">Übersicht</h3>
+                      <span className="badge rounded-pill text-bg-light border text-secondary">{noteCount}</span>
+                    </div>
+                    <div className="d-flex flex-wrap gap-2">
+                      <span className="badge rounded-pill board-kind-badge">Notiz {categoryCounts['']}</span>
+                      <span className="badge rounded-pill board-kind-badge">Idee {categoryCounts.Idea}</span>
+                      <span className="badge rounded-pill board-kind-badge">To-Do {categoryCounts.Task}</span>
+                    </div>
+                    <p className="text-secondary mb-0">Alle Einträge landen im selben Backend, die Desktop-Ansicht bleibt aber separat erreichbar.</p>
+                  </div>
+                </div>
+
+                <button className="btn btn-link text-decoration-none align-self-start px-0" type="button" onClick={() => window.location.assign('/')}>
+                  Zur mobilen PWA zurück
+                </button>
+              </div>
+            </aside>
+
+            <main className="desktop-stage flex-grow-1 d-flex flex-column gap-3 min-h-0">
+              <div className="desktop-stage-header card border-0 shadow-sm">
+                <div className="card-body p-3 p-lg-4 d-flex flex-column flex-lg-row align-items-start align-items-lg-center justify-content-between gap-3">
+                  <div>
+                    <p className="small text-uppercase text-secondary fw-semibold mb-1">Pinnwand</p>
+                    <h2 className="h3 mb-1">Post-its auf einem Board</h2>
+                    <p className="text-secondary mb-0">Klicke eine Notiz an, um die Detailansicht rechts zu öffnen.</p>
+                  </div>
+                  <div className="d-flex flex-wrap align-items-center gap-2">
+                    <span className="badge rounded-pill text-bg-light border text-secondary">Aktualisiert: {notes[0] ? formatRelativeDate(notes[0].updatedAt) : 'noch keine Notizen'}</span>
+                    <button className="btn btn-outline-primary btn-sm" onClick={() => void runAllNotesRoutine()} type="button">
+                      <i className="bi bi-diagram-3-fill me-1" aria-hidden="true" />
+                      Kategorien neu erstellen
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <div className="desktop-board-grid flex-grow-1 d-grid gap-3 min-h-0">
+                <section className="desktop-pin-board card border-0 shadow-sm min-h-0">
+                  <div className="card-body p-3 p-lg-4 d-flex flex-column gap-3 h-100 min-h-0">
+                    {notes.length === 0 ? (
+                      <div className="desktop-empty-board alert alert-light border mb-0 h-100 d-flex flex-column align-items-center justify-content-center text-center gap-2">
+                        <h3 className="h5 mb-0">Noch keine Notizen vorhanden</h3>
+                        <p className="text-secondary mb-0">Nutze links die Aufnahme oder die Textnotiz, dann erscheinen die Karten hier wie auf einer Pinnwand.</p>
+                      </div>
+                    ) : (
+                      <div className="desktop-pin-grid d-grid gap-3">
+                        {notes.map((note) => (
+                          <StickyNoteCard
+                            key={note.id}
+                            note={note}
+                            selected={selectedNoteId === note.id}
+                            compact
+                            onOpen={() => openNoteDetail(note.id)}
+                            onTogglePlayback={() => {
+                              const audioPath = noteAudioPath(note)
+                              if (audioPath) {
+                                void playAudio(note.id, mediaUrl(audioPath))
+                              }
+                            }}
+                            playing={playingId === note.id}
+                          />
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </section>
+              </div>
+            </main>
+          </div>
+
+          {selectedNote ? (
+            <div className="overlay-backdrop overlay-dark desktop-note-backdrop" onClick={closeNoteDetail}>
+              <div className="modal-panel note-detail-panel desktop-note-panel" onClick={(event) => event.stopPropagation()}>
+                <NoteDetailPage
+                  note={selectedNote}
+                  onClose={closeNoteDetail}
+                  onDeleteNote={() => setDeleteNoteTarget(selectedNote)}
+                  onChangeCategory={(category) => changeSelectedNoteCategory(category)}
+                  onRebuildNote={() => void rebuildSelectedNote()}
+                  onReanalyzeCategory={() => void reanalyzeSelectedNoteCategory()}
+                />
+              </div>
+            </div>
+          ) : null}
+
+          {settingsOpen && settings && (
+            <SettingsModal
+              settings={settings}
+              settingsDraft={settingsDraft}
+              setSettingsDraft={setSettingsDraft}
+              onClose={() => setSettingsOpen(false)}
+              onSave={() => void saveSettings()}
+              onExportTechnicalReport={() => void exportTechnicalReport()}
+              reportStatus={reportStatus}
+              reportDownload={reportDownload}
+              routineStatus={routineStatus}
+              onRunAllNotesRoutine={() => void runAllNotesRoutine()}
+              onDeleteAllNotes={() => setDeleteAllOpen(true)}
+              onRefreshLlmLogs={() => void loadLlmLogs()}
+              llmLogs={llmLogs}
+              llmLogsLoading={llmLogsLoading}
+              llmLogsError={llmLogsError}
+            />
+          )}
+
+          {textNoteOpen && (
+            <TextNoteModal
+              noteDraft={noteDraft}
+              setNoteDraft={setNoteDraft}
+              onSubmit={() => void submitTextNote()}
+              onClose={() => setTextNoteOpen(false)}
+              submitting={busy !== null}
+            />
+          )}
+
+          {recorder.isRecording && <RecordingOverlay levels={recorder.levels} onStop={() => void stopVoiceCapture()} />}
+          {busy && <LoadingOverlay message={busy.message} />}
+          {error && <ErrorOverlay message={error} onDismiss={() => setError('')} />}
+
+          {deleteNoteTarget && (
+            <ConfirmationModal
+              title="Notiz löschen?"
+              message={`Die Notiz „${noteTitle(deleteNoteTarget)}“ wird dauerhaft entfernt.`}
+              confirmLabel="Löschen"
+              cancelLabel="Abbrechen"
+              destructive
+              onConfirm={() => void deleteSelectedNote()}
+              onCancel={() => setDeleteNoteTarget(null)}
+            />
+          )}
+
+          {deleteAllOpen && (
+            <ConfirmationModal
+              title="Alle Notizen löschen?"
+              message="Damit werden alle Notizen und Aufnahmen aus dem lokalen Speicher entfernt."
+              confirmLabel="Alle löschen"
+              cancelLabel="Abbrechen"
+              destructive
+              onConfirm={() => void deleteAllNotes()}
+              onCancel={() => setDeleteAllOpen(false)}
+            />
+          )}
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className="bootstrap-app text-body">
@@ -868,6 +1103,7 @@ export default function App() {
               onDeleteNote={() => setDeleteNoteTarget(selectedNote)}
               onChangeCategory={(category) => changeSelectedNoteCategory(category)}
               onRebuildNote={() => void rebuildSelectedNote()}
+              onReanalyzeCategory={() => void reanalyzeSelectedNoteCategory()}
             />
           ) : (
             <div className="page-slider h-100" ref={pageSliderRef} onScroll={handlePageScroll}>
@@ -1281,6 +1517,7 @@ function NoteDetailPage(props: {
   onDeleteNote: () => void
   onChangeCategory: (category: NoteCategory) => Promise<void>
   onRebuildNote: () => void
+  onReanalyzeCategory: () => void
 }) {
   const note = props.note
   const [categoryDraft, setCategoryDraft] = useState<NoteCategory>(note.category)
@@ -1329,6 +1566,9 @@ function NoteDetailPage(props: {
         <div className="detail-actions vstack gap-2 mt-auto">
           <button className="btn btn-light detail-action-btn" onClick={() => setCategoryPickerOpen(true)} type="button">
             Kategorie ändern
+          </button>
+          <button className="btn btn-light detail-action-btn" onClick={props.onReanalyzeCategory} type="button">
+            Kategorie neu ermitteln
           </button>
           <button className="btn btn-light detail-action-btn" onClick={props.onRebuildNote} type="button">
             Neu zusammenfassen und neu transkribieren

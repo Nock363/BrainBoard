@@ -646,6 +646,19 @@ def root() -> Response:
     )
 
 
+@app.get("/desktop")
+@app.get("/desktop/")
+@app.get("/desktop/{path:path}")
+def desktop_frontend(path: str = "") -> Response:
+    index_file = config.frontend_dist_dir / "index.html"
+    if index_file.exists():
+        return HTMLResponse(index_file.read_text(encoding="utf-8"))
+    return PlainTextResponse(
+        "BrainSession Desktop backend is running. Build the frontend with `npm run build` first.",
+        status_code=200,
+    )
+
+
 if config.frontend_dist_dir.exists():
     app.mount("/media", StaticFiles(directory=str(config.media_dir), html=False), name="media")
     app.mount("/", StaticFiles(directory=str(config.frontend_dist_dir), html=True), name="frontend")

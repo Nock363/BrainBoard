@@ -6,11 +6,11 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=/home/myagent/.ductor/workspace/external/Brainsession_pwa
-ExecStart=/usr/bin/env bash /home/myagent/.ductor/workspace/external/Brainsession_pwa/scripts/start-prod.sh
+ExecStart=/run/current-system/sw/bin/bash /home/myagent/.ductor/workspace/external/Brainsession_pwa/scripts/start-prod.sh
 Restart=always
 RestartSec=5
 Environment=HOST=0.0.0.0
+Environment=PATH=/run/current-system/sw/bin:/usr/bin:/bin
 
 [Install]
 WantedBy=default.target
-

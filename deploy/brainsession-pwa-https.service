@@ -6,10 +6,12 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=/home/myagent/.ductor/workspace/external/Brainsession_pwa
-ExecStart=/usr/bin/env bash /home/myagent/.ductor/workspace/external/Brainsession_pwa/scripts/start-https.sh
+ExecStart=/run/current-system/sw/bin/bash /home/myagent/.ductor/workspace/external/Brainsession_pwa/scripts/start-local-https.sh
 Restart=always
 RestartSec=5
 Environment=HOST=0.0.0.0
+Environment=BRAINSESSION_HTTPS_IPS=100.77.57.8
+Environment=PATH=/run/current-system/sw/bin:/usr/bin:/bin
 
 [Install]
 WantedBy=default.target

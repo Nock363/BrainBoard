@@ -5,7 +5,9 @@ import 'bootstrap-icons/font/bootstrap-icons.css'
 import App from './App'
 import './styles.css'
 
-if ('serviceWorker' in navigator) {
+const isDesktopRoute = window.location.pathname === '/desktop' || window.location.pathname.startsWith('/desktop/')
+
+if ('serviceWorker' in navigator && !isDesktopRoute) {
   window.addEventListener('load', () => {
     void navigator.serviceWorker.register('/sw.js').catch(() => {})
   })
