@@ -1,5 +1,6 @@
 import type {
   LlmLogsResponse,
+  BoardGroupsResponse,
   NoteResponse,
   NotesResponse,
   ReportResponse,
@@ -58,6 +59,7 @@ export const api = {
     followUpModel?: string
     language?: string
     categoryPromptPrefix?: string
+    groupPromptPrefix?: string
   }): Promise<SettingsResponse> {
     return requestJson('/api/settings', {
       method: 'PUT',
@@ -114,6 +116,12 @@ export const api = {
   },
   async reanalyzeAllNotes(): Promise<RoutineResponse> {
     return requestJson('/api/routines/reanalyze-notes', {
+      method: 'POST',
+      body: '{}',
+    })
+  },
+  async groupNotes(): Promise<BoardGroupsResponse> {
+    return requestJson('/api/routines/group-notes', {
       method: 'POST',
       body: '{}',
     })

@@ -17,6 +17,14 @@ DEFAULT_CATEGORY_PROMPT_PREFIX = (
     "Antworte nur mit genau einer dieser drei Ausgaben."
 )
 
+DEFAULT_GROUP_PROMPT_PREFIX = (
+    "Du analysierst alle BrainSession-Notizen und bildest thematische Gruppen für eine Pinnwand. "
+    "Eine Gruppe kann Notizen, To-Dos und Ideen gemeinsam enthalten. "
+    "Erstelle wenige klare Spalten, die ähnliche Themen, Projekte oder Ziele zusammenfassen. "
+    "Gib jeder Gruppe einen kurzen Titel und eine kurze Beschreibung. "
+    "Jede Notiz muss genau einer Gruppe zugeordnet werden."
+)
+
 
 STOP_WORDS = {
     "und",
@@ -146,6 +154,20 @@ def _format_category_log(category: str) -> str:
         "": "Notiz",
     }.get(category, category or "Notiz")
     return f"category: {display_category}"
+
+
+def _format_group_log(groups: list[dict[str, Any]]) -> str:
+    return json.dumps(
+        [
+            {
+                "title": _clean_text(str(group.get("title", ""))) or "(ohne Titel)",
+                "description": _clean_text(str(group.get("description", ""))) or "(ohne Beschreibung)",
+                "noteIds": _normalize_list(group.get("noteIds", [])),
+            }
+            for group in groups
+        ],
+        ensure_ascii=False,
+    )
 
 
 def _format_question_log(question: str) -> str:
@@ -342,6 +364,55 @@ def _build_category_schema() -> dict[str, Any]:
     }
 
 
+def _build_group_schema() -> dict[str, Any]:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "groups": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "title": {"type": "string"},
+                        "description": {"type": "string"},
+                        "noteIds": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                        },
+                    },
+                    "required": ["title", "description", "noteIds"],
+                },
+            }
+        },
+        "required": ["groups"],
+    }
+
+
+def _compact_note_group_payload(note: dict[str, Any]) -> dict[str, Any]:
+    note_id = _clean_text(str(note.get("id", "")))
+    title = _clean_text(str(note.get("title", ""))) or "Neue Notiz"
+    summary_headline = _clean_text(str(note.get("summaryHeadline", "")))
+    summary = _clean_text(str(note.get("summary", "")))
+    raw_transcript = _clean_text(str(note.get("rawTranscript", "")))
+    note_type = {
+        "Idea": "Idee",
+        "Task": "To-Do",
+        "": "Notiz",
+    }.get(_normalize_category(note.get("category")), "Notiz")
+    body = summary or raw_transcript or summary_headline
+    if len(body) > 700:
+        body = f"{body[:697].rstrip()}..."
+    return {
+        "id": note_id,
+        "type": note_type,
+        "title": title,
+        "summaryHeadline": summary_headline,
+        "body": body,
+    }
+
+
 def interpret_text_note(api_key: str, model: str, text: str) -> dict[str, Any]:
     clean_key = api_key.strip()
     clean_text = _clean_text(text)
@@ -431,6 +502,82 @@ def classify_note_category(
         log_entry["error"] = "Konnte Kategorie nicht klassifizieren."
         _emit_llm_log(log_entry)
         return ""
+
+
+def group_notes_by_theme(
+    api_key: str,
+    model: str,
+    prompt_prefix: str,
+    notes: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    clean_key = api_key.strip()
+    clean_prefix = _clean_text(prompt_prefix) or DEFAULT_GROUP_PROMPT_PREFIX
+    payload_notes = [_compact_note_group_payload(note) for note in notes if _clean_text(str(note.get("id", "")))]
+    if not payload_notes:
+        return []
+    if not clean_key:
+        raise ValueError("OpenAI API key fehlt")
+
+    payload = {
+        "model": model.strip() or "gpt-4o-mini",
+        "input": [
+            {
+                "role": "system",
+                "content": (
+                    "Du gruppierst BrainSession-Notizen auf einem Board. "
+                    "Analysiere alle Notizen als Gesamtheit und ordne sie thematisch in wenige klare Spalten. "
+                    "Eine Gruppe darf Notizen, To-Dos und Ideen gemeinsam enthalten. "
+                    "Jede Notiz muss genau einer Gruppe zugeordnet werden. "
+                    "Gib pro Gruppe einen kurzen Titel und eine kurze Beschreibung. "
+                    "Antworte nur als JSON mit groups."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"Gruppen-Prompt:\n{clean_prefix}\n\n"
+                    f"Notizen als JSON:\n{json.dumps(payload_notes, ensure_ascii=False)}"
+                ),
+            },
+        ],
+        "text": {
+            "format": {
+                "type": "json_schema",
+                "name": "board_groups",
+                "schema": _build_group_schema(),
+            }
+        },
+    }
+    log_entry = _make_llm_log_entry("Gruppierung", payload["model"], _normalize_messages(payload["input"]))
+    try:
+        response = _openai_responses(clean_key, payload)
+        raw = _extract_output_text(response)
+        parsed = json.loads(raw)
+        raw_groups = parsed.get("groups")
+        if not isinstance(raw_groups, list):
+            raise ValueError("No groups returned")
+
+        groups: list[dict[str, Any]] = []
+        for group in raw_groups:
+            if not isinstance(group, dict):
+                continue
+            title = _clean_text(str(group.get("title", "")))
+            description = _clean_text(str(group.get("description", "")))
+            note_ids = _normalize_list(group.get("noteIds", []))
+            if not title or not note_ids:
+                continue
+            groups.append({"title": title, "description": description, "noteIds": note_ids})
+
+        if not groups:
+            raise ValueError("No valid groups returned")
+
+        log_entry["response"] = _format_group_log(groups)
+        _emit_llm_log(log_entry)
+        return groups
+    except Exception:
+        log_entry["error"] = "Konnte Notizen nicht gruppieren."
+        _emit_llm_log(log_entry)
+        raise
 
 
 def summarize_note_timeline(

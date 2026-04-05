@@ -37,6 +37,7 @@ class SettingsResponse(BaseModel):
     followUpModel: str
     language: str
     categoryPromptPrefix: str
+    groupPromptPrefix: str
     dataDir: str
     mediaDir: str
 
@@ -49,6 +50,7 @@ class UpdateSettingsRequest(BaseModel):
     followUpModel: str | None = None
     language: str | None = None
     categoryPromptPrefix: str | None = None
+    groupPromptPrefix: str | None = None
 
 
 class CreateTextNoteRequest(BaseModel):
@@ -87,6 +89,17 @@ class ReportResponse(BaseModel):
     ok: bool
     reportMarkdown: str
     fileName: str
+
+
+class BoardGroupItem(BaseModel):
+    key: str
+    title: str
+    description: str = ""
+    notes: list[NoteNode] = Field(default_factory=list)
+
+
+class BoardGroupsResponse(BaseModel):
+    groups: list[BoardGroupItem] = Field(default_factory=list)
 
 
 class LlmLogMessage(BaseModel):

@@ -15,15 +15,19 @@ from fastapi.staticfiles import StaticFiles
 
 from backend.ai import (
     classify_note_category,
+    group_notes_by_theme,
     interpret_text_note,
     set_llm_logger,
     summarize_note_timeline,
     transcribe_audio,
     DEFAULT_CATEGORY_PROMPT_PREFIX,
+    DEFAULT_GROUP_PROMPT_PREFIX,
 )
 from backend.config import get_config
 from backend.models import (
     AppendTextRequest,
+    BoardGroupItem,
+    BoardGroupsResponse,
     CreateTextNoteRequest,
     NoteNode,
     NoteResponse,
@@ -130,11 +134,16 @@ def default_settings(config) -> dict[str, object]:
         "followUpModel": config.follow_up_model,
         "language": config.language,
         "categoryPromptPrefix": DEFAULT_CATEGORY_PROMPT_PREFIX,
+        "groupPromptPrefix": DEFAULT_GROUP_PROMPT_PREFIX,
     }
 
 
 def category_prompt_prefix_from(settings: dict[str, object]) -> str:
     return clean_text_value(settings.get("categoryPromptPrefix")) or DEFAULT_CATEGORY_PROMPT_PREFIX
+
+
+def group_prompt_prefix_from(settings: dict[str, object]) -> str:
+    return clean_text_value(settings.get("groupPromptPrefix")) or DEFAULT_GROUP_PROMPT_PREFIX
 
 
 def build_note_from_text(
@@ -258,6 +267,7 @@ def get_settings() -> SettingsResponse:
         followUpModel=str(current.get("followUpModel", config.follow_up_model)),
         language=str(current.get("language", config.language)),
         categoryPromptPrefix=category_prompt_prefix_from(current),
+        groupPromptPrefix=group_prompt_prefix_from(current),
         dataDir=str(config.data_dir),
         mediaDir=str(config.media_dir),
     )
@@ -281,6 +291,8 @@ def update_settings(payload: UpdateSettingsRequest) -> SettingsResponse:
         current["language"] = payload.language.strip()
     if payload.categoryPromptPrefix is not None:
         current["categoryPromptPrefix"] = payload.categoryPromptPrefix.strip() or DEFAULT_CATEGORY_PROMPT_PREFIX
+    if payload.groupPromptPrefix is not None:
+        current["groupPromptPrefix"] = payload.groupPromptPrefix.strip() or DEFAULT_GROUP_PROMPT_PREFIX
     store.save_settings(current)
     return get_settings()
 
@@ -288,6 +300,78 @@ def update_settings(payload: UpdateSettingsRequest) -> SettingsResponse:
 @app.get("/api/notes", response_model=NotesResponse)
 def list_notes() -> NotesResponse:
     return NotesResponse(notes=[note_to_model(note, lambda rel: f"/media/{rel}") for note in store.list_notes()])
+
+
+@app.post("/api/routines/group-notes", response_model=BoardGroupsResponse)
+def group_notes() -> BoardGroupsResponse:
+    current_settings = {**default_settings(config), **store.load_settings()}
+    api_key = str(current_settings.get("openAiApiKey") or config.openai_api_key or "")
+    summary_model = str(current_settings.get("summaryModel") or config.summary_model)
+    group_prompt_prefix = group_prompt_prefix_from(current_settings)
+    notes = store.list_notes()
+    grouped_notes = group_notes_by_theme(
+        api_key=api_key,
+        model=summary_model,
+        prompt_prefix=group_prompt_prefix,
+        notes=notes,
+    )
+
+    note_map = {
+        str(note.get("id", "")): note
+        for note in notes
+        if isinstance(note, dict) and str(note.get("id", "")).strip()
+    }
+    seen_note_ids: set[str] = set()
+    response_groups: list[BoardGroupItem] = []
+
+    for index, group in enumerate(grouped_notes):
+        group_title = clean_text_value(group.get("title")) or f"Gruppe {index + 1}"
+        group_description = clean_text_value(group.get("description"))
+        group_note_ids: list[str] = []
+        group_notes: list[NoteNode] = []
+        for note_id in group.get("noteIds", []):
+            clean_note_id = clean_text_value(note_id)
+            if not clean_note_id or clean_note_id in seen_note_ids:
+                continue
+            note = note_map.get(clean_note_id)
+            if note is None:
+                continue
+            seen_note_ids.add(clean_note_id)
+            group_note_ids.append(clean_note_id)
+            group_notes.append(note_to_model(note, lambda rel: f"/media/{rel}"))
+        if not group_notes:
+            continue
+        response_groups.append(
+            BoardGroupItem(
+                key=f"group-{index}-{re.sub(r'[^a-z0-9]+', '-', group_title.lower()).strip('-') or 'board'}",
+                title=group_title,
+                description=group_description,
+                notes=group_notes,
+            )
+        )
+
+    unassigned_notes = [note for note in notes if str(note.get("id", "")) not in seen_note_ids]
+    if unassigned_notes:
+        response_groups.append(
+            BoardGroupItem(
+                key="group-unassigned",
+                title="Nicht zugeteilt",
+                description="Notizen ohne eindeutige thematische Gruppe.",
+                notes=[note_to_model(note, lambda rel: f"/media/{rel}") for note in unassigned_notes],
+            )
+        )
+
+    if not response_groups:
+        response_groups.append(
+            BoardGroupItem(
+                key="group-empty",
+                title="Nicht zugeteilt",
+                description="Keine Notizen vorhanden.",
+                notes=[],
+            )
+        )
+
+    return BoardGroupsResponse(groups=response_groups)
 
 
 @app.get("/api/llm-logs", response_model=LlmLogsResponse)

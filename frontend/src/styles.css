@@ -368,9 +368,9 @@ main {
 }
 
 .board-column {
-  flex: 0 0 100%;
-  min-width: 100%;
-  max-width: 100%;
+  flex: 0 0 clamp(18rem, 82vw, 22rem);
+  min-width: clamp(18rem, 82vw, 22rem);
+  max-width: clamp(18rem, 82vw, 22rem);
   min-height: 0;
   scroll-snap-align: start;
   scroll-snap-stop: always;
@@ -385,11 +385,36 @@ main {
   letter-spacing: -0.02em;
 }
 
+.board-column-description {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  font-size: 0.9rem;
+  line-height: 1.35;
+}
+
+.board-group-kinds {
+  margin-top: -0.1rem;
+}
+
+.board-group-kinds .badge {
+  font-size: 0.72rem;
+  line-height: 1.1;
+}
+
 .desktop-mode {
   background:
     radial-gradient(circle at top left, rgba(255, 248, 227, 0.95), transparent 42%),
     radial-gradient(circle at top right, rgba(243, 232, 216, 0.92), transparent 34%),
     linear-gradient(135deg, #f7efe0 0%, #f8f4eb 48%, #eee3d1 100%);
+}
+
+.desktop-mode .board-column {
+  flex: 0 0 min(22rem, 24vw);
+  min-width: min(22rem, 24vw);
+  max-width: min(22rem, 24vw);
 }
 
 .desktop-shell {
@@ -537,15 +562,6 @@ main {
   .desktop-pin-grid {
     grid-template-columns: repeat(auto-fill, minmax(14rem, 1fr));
   }
-}
-
-.board-group-keywords .badge {
-  font-size: 0.72rem;
-  line-height: 1.1;
-}
-
-.board-group-kinds {
-  margin-top: -0.1rem;
 }
 
 .board-kind-badge {

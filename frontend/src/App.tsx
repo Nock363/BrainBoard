@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react'
 import { api, mediaUrl } from './api'
 import { useVoiceRecorder } from './hooks/useVoiceRecorder'
-import type { LlmLogEntry, NoteCategory, NoteNode, SettingsResponse, TabKey } from './types'
+import type { BoardGroup, LlmLogEntry, NoteCategory, NoteNode, SettingsResponse, TabKey } from './types'
 
 type BusyState = { message: string } | null
 
@@ -18,14 +18,7 @@ type SettingsDraft = {
   followUpModel: string
   language: string
   categoryPromptPrefix: string
-}
-
-type BoardGroup = {
-  key: string
-  label: string
-  notes: NoteNode[]
-  keywords: string[]
-  kindCounts: Record<NoteCategory, number>
+  groupPromptPrefix: string
 }
 
 type GroupToken = {
@@ -310,9 +303,8 @@ function createBoardGroups(notes: NoteNode[]): BoardGroup[] {
         .map((item) => ({ key: normalizeGroupToken(item.label), label: item.label }))
 
       const firstNote = cluster.notes[0]?.note
-      const label = buildGroupLabel(rankedTokens, firstNote ? noteTitle(firstNote) : 'Gruppe')
+      const title = buildGroupLabel(rankedTokens, firstNote ? noteTitle(firstNote) : 'Gruppe')
       const keywordTokens = formatGroupKeywords(rankedTokens)
-      const kindCounts: Record<NoteCategory, number> = { '': 0, Idea: 0, Task: 0 }
 
       const groupedNotes = cluster.notes.map((item) => item.note).sort((left, right) => {
         const rightTime = new Date(right.updatedAt).getTime()
@@ -320,16 +312,11 @@ function createBoardGroups(notes: NoteNode[]): BoardGroup[] {
         return rightTime - leftTime
       })
 
-      for (const note of groupedNotes) {
-        kindCounts[note.category] = (kindCounts[note.category] ?? 0) + 1
-      }
-
       return {
         key: `group-${index}`,
-        label,
+        title,
+        description: keywordTokens.length > 0 ? `Gemeinsame Begriffe: ${keywordTokens.join(' · ')}` : 'Thematisch ähnliche Notizen aus dem Board.',
         notes: groupedNotes,
-        keywords: keywordTokens,
-        kindCounts,
       }
     })
     .filter((group) => {
@@ -346,16 +333,11 @@ function createBoardGroups(notes: NoteNode[]): BoardGroup[] {
     })
 
   if (unassignedNotes.length > 0) {
-    const kindCounts: Record<NoteCategory, number> = { '': 0, Idea: 0, Task: 0 }
-    for (const note of unassignedNotes) {
-      kindCounts[note.category] = (kindCounts[note.category] ?? 0) + 1
-    }
     groupedClusters.unshift({
       key: 'unassigned',
-      label: 'Nicht zugeteilt',
+      title: 'Nicht zugeteilt',
+      description: 'Notizen ohne klare thematische Gruppe.',
       notes: unassignedNotes,
-      keywords: [],
-      kindCounts,
     })
   }
 
@@ -460,6 +442,7 @@ export default function App() {
     followUpModel: '',
     language: '',
     categoryPromptPrefix: '',
+    groupPromptPrefix: '',
   })
   const [reportStatus, setReportStatus] = useState('')
   const [reportDownload, setReportDownload] = useState('')
@@ -492,14 +475,22 @@ export default function App() {
 
   const selectedNote = useMemo(() => notes.find((note) => note.id === selectedNoteId) ?? null, [notes, selectedNoteId])
 
-  const rebuildBoardGroups = (nextNotes: NoteNode[] = notes) => {
-    setBoardGroups(createBoardGroups(nextNotes))
+  const reloadBoardGroups = async (nextNotes: NoteNode[] = notes) => {
+    try {
+      const response = await api.groupNotes()
+      setBoardGroups(response.groups)
+      return response.groups
+    } catch {
+      const fallbackGroups = createBoardGroups(nextNotes)
+      setBoardGroups(fallbackGroups)
+      return fallbackGroups
+    }
   }
 
   const reloadNotes = async () => {
     const response = await api.listNotes()
     setNotes(response.notes)
-    rebuildBoardGroups(response.notes)
+    await reloadBoardGroups(response.notes)
     if (selectedNoteId && !response.notes.some((note) => note.id === selectedNoteId)) {
       setSelectedNoteId('')
     }
@@ -517,6 +508,7 @@ export default function App() {
       followUpModel: response.followUpModel,
       language: response.language,
       categoryPromptPrefix: response.categoryPromptPrefix,
+      groupPromptPrefix: response.groupPromptPrefix,
     })
     return response
   }
@@ -698,6 +690,12 @@ export default function App() {
     setRoutineStatus(`Kategorien neu erstellt: ${response.updatedNotes} Notizen aktualisiert${response.skippedNotes ? `, ${response.skippedNotes} übersprungen` : ''}`)
   }
 
+  const runBoardGroupingRoutine = async () => {
+    const groups = await runBusy('Gruppen werden neu erstellt …', async () => reloadBoardGroups())
+    await loadLlmLogs()
+    setRoutineStatus(`Gruppen neu erstellt: ${groups.length} Spalten`)
+  }
+
   const deleteSelectedNote = async () => {
     if (!deleteNoteTarget) {
       return
@@ -762,6 +760,7 @@ export default function App() {
         followUpModel: settingsDraft.followUpModel.trim() || undefined,
         language: settingsDraft.language.trim() || undefined,
         categoryPromptPrefix: settingsDraft.categoryPromptPrefix,
+        groupPromptPrefix: settingsDraft.groupPromptPrefix,
       }),
     )
     setSettings(response)
@@ -774,7 +773,9 @@ export default function App() {
       followUpModel: response.followUpModel,
       language: response.language,
       categoryPromptPrefix: response.categoryPromptPrefix,
+      groupPromptPrefix: response.groupPromptPrefix,
     }))
+    await reloadBoardGroups()
   }
 
   const exportTechnicalReport = async () => {
@@ -948,53 +949,15 @@ export default function App() {
             </aside>
 
             <main className="desktop-stage flex-grow-1 d-flex flex-column gap-3 min-h-0">
-              <div className="desktop-stage-header card border-0 shadow-sm">
-                <div className="card-body p-3 p-lg-4 d-flex flex-column flex-lg-row align-items-start align-items-lg-center justify-content-between gap-3">
-                  <div>
-                    <p className="small text-uppercase text-secondary fw-semibold mb-1">Pinnwand</p>
-                    <h2 className="h3 mb-1">Post-its auf einem Board</h2>
-                    <p className="text-secondary mb-0">Klicke eine Notiz an, um die Detailansicht rechts zu öffnen.</p>
-                  </div>
-                  <div className="d-flex flex-wrap align-items-center gap-2">
-                    <span className="badge rounded-pill text-bg-light border text-secondary">Aktualisiert: {notes[0] ? formatRelativeDate(notes[0].updatedAt) : 'noch keine Notizen'}</span>
-                    <button className="btn btn-outline-primary btn-sm" onClick={() => void runAllNotesRoutine()} type="button">
-                      <i className="bi bi-diagram-3-fill me-1" aria-hidden="true" />
-                      Kategorien neu erstellen
-                    </button>
-                  </div>
-                </div>
-              </div>
-
-              <div className="desktop-board-grid flex-grow-1 d-grid gap-3 min-h-0">
-                <section className="desktop-pin-board card border-0 shadow-sm min-h-0">
-                  <div className="card-body p-3 p-lg-4 d-flex flex-column gap-3 h-100 min-h-0">
-                    {notes.length === 0 ? (
-                      <div className="desktop-empty-board alert alert-light border mb-0 h-100 d-flex flex-column align-items-center justify-content-center text-center gap-2">
-                        <h3 className="h5 mb-0">Noch keine Notizen vorhanden</h3>
-                        <p className="text-secondary mb-0">Nutze links die Aufnahme oder die Textnotiz, dann erscheinen die Karten hier wie auf einer Pinnwand.</p>
-                      </div>
-                    ) : (
-                      <div className="desktop-pin-grid d-grid gap-3">
-                        {notes.map((note) => (
-                          <StickyNoteCard
-                            key={note.id}
-                            note={note}
-                            selected={selectedNoteId === note.id}
-                            compact
-                            onOpen={() => openNoteDetail(note.id)}
-                            onTogglePlayback={() => {
-                              const audioPath = noteAudioPath(note)
-                              if (audioPath) {
-                                void playAudio(note.id, mediaUrl(audioPath))
-                              }
-                            }}
-                            playing={playingId === note.id}
-                          />
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                </section>
+              <div className="desktop-board-grid flex-grow-1 min-h-0">
+                <BoardView
+                  groups={boardGroups}
+                  selectedNoteId={selectedNoteId}
+                  onOpenNote={openNoteDetail}
+                  onTogglePlayback={(id, url) => void playAudio(id, url)}
+                  currentlyPlayingId={playingId}
+                  onCreateGroups={() => void runBoardGroupingRoutine()}
+                />
               </div>
             </main>
           </div>
@@ -1026,6 +989,7 @@ export default function App() {
               reportDownload={reportDownload}
               routineStatus={routineStatus}
               onRunAllNotesRoutine={() => void runAllNotesRoutine()}
+              onRunBoardGroupingRoutine={() => void runBoardGroupingRoutine()}
               onDeleteAllNotes={() => setDeleteAllOpen(true)}
               onRefreshLlmLogs={() => void loadLlmLogs()}
               llmLogs={llmLogs}
@@ -1131,14 +1095,14 @@ export default function App() {
             </section>
 
               <section className="page-panel h-100 d-flex flex-column gap-3">
-                <BoardView
-                  groups={boardGroups}
-                  selectedNoteId={selectedNoteId}
-                  onOpenNote={openNoteDetail}
-                  onTogglePlayback={(id, url) => void playAudio(id, url)}
-                  currentlyPlayingId={playingId}
-                  onCreateGroups={() => rebuildBoardGroups(notes)}
-                />
+              <BoardView
+                groups={boardGroups}
+                selectedNoteId={selectedNoteId}
+                onOpenNote={openNoteDetail}
+                onTogglePlayback={(id, url) => void playAudio(id, url)}
+                currentlyPlayingId={playingId}
+                onCreateGroups={() => void runBoardGroupingRoutine()}
+              />
               </section>
             </div>
           )}
@@ -1190,6 +1154,7 @@ export default function App() {
             reportDownload={reportDownload}
             routineStatus={routineStatus}
             onRunAllNotesRoutine={() => void runAllNotesRoutine()}
+            onRunBoardGroupingRoutine={() => void runBoardGroupingRoutine()}
             onDeleteAllNotes={() => setDeleteAllOpen(true)}
             onRefreshLlmLogs={() => void loadLlmLogs()}
             llmLogs={llmLogs}
@@ -1359,22 +1324,22 @@ function BoardView(props: {
           <div className="d-flex align-items-start justify-content-between gap-3">
             <div>
               <p className="small text-uppercase text-secondary fw-semibold mb-1">Board</p>
-              <h2 className="h3 mb-0">Projektgruppen</h2>
+              <h2 className="h3 mb-0">Themen-Spalten</h2>
             </div>
             <div className="d-flex flex-column align-items-end gap-2">
               <button className="btn btn-outline-primary btn-sm" onClick={props.onCreateGroups} type="button">
                 <i className="bi bi-diagram-3-fill me-1" aria-hidden="true" />
-                Gruppen erstellen
+                Neu gruppieren
               </button>
               <span className="badge rounded-pill text-bg-light border text-secondary">{props.groups.reduce((count, group) => count + group.notes.length, 0)}</span>
             </div>
           </div>
-          <p className="text-secondary mb-0">Mit dem Button werden ähnliche Notizen, Ideen und To-Dos automatisch zu Projektgruppen zusammengefasst; alles andere startet in „Nicht zugeteilt“.</p>
+          <p className="text-secondary mb-0">Die KI bündelt alle vorhandenen Notizen thematisch in Spalten. Eine Spalte kann Notizen, Ideen und To-Dos gemischt enthalten.</p>
         </div>
       </div>
 
       {!hasNotes ? (
-        <div className="alert alert-light border shadow-sm mb-0">Noch keine Gruppen vorhanden. Neue Notizen landen zunächst in „Nicht zugeteilt“.</div>
+        <div className="alert alert-light border shadow-sm mb-0">Noch keine Notizen vorhanden. Sobald du erste Einträge erfasst, bildet die KI daraus thematische Spalten.</div>
       ) : (
         <div className="board-row flex-grow-1 d-flex gap-3 overflow-auto pb-2">
           {props.groups.map((group) => (
@@ -1401,26 +1366,52 @@ function BoardGroupView(props: {
   selectedNoteId: string
 }) {
   const { group } = props
-  const kindOptions = [
-    { key: '' as NoteCategory, label: 'Notiz' },
-    { key: 'Idea' as NoteCategory, label: 'Idee' },
-    { key: 'Task' as NoteCategory, label: 'To-Do' },
-  ]
-  const kindBadges = kindOptions.filter((item) => group.kindCounts[item.key] > 0)
+  const typeCounts = group.notes.reduce<Record<NoteCategory, number>>(
+    (accumulator, note) => {
+      accumulator[note.category] += 1
+      return accumulator
+    },
+    { '': 0, Idea: 0, Task: 0 },
+  )
+  const typeBadges = (['', 'Idea', 'Task'] as NoteCategory[])
+    .map((category) => ({
+      category,
+      count: typeCounts[category],
+      label:
+        category === 'Idea'
+          ? typeCounts[category] === 1
+            ? '1 Idee'
+            : `${typeCounts[category]} Ideen`
+          : category === 'Task'
+            ? typeCounts[category] === 1
+              ? '1 To-Do'
+              : `${typeCounts[category]} To-Dos`
+            : typeCounts[category] === 1
+              ? '1 Notiz'
+              : `${typeCounts[category]} Notizen`,
+    }))
+    .filter((item) => item.count > 0)
 
   return (
     <article className="board-column card border-0 shadow-sm flex-shrink-0">
       <div className="card-body p-3 d-flex flex-column gap-3 h-100">
         <div className="d-flex align-items-start justify-content-between gap-2">
           <div>
-            <p className="small text-uppercase text-secondary fw-semibold mb-1">Gruppe</p>
-            <h3 className="h5 mb-1 board-column-title">{group.label}</h3>
-            {group.keywords.length > 0 ? <div className="board-group-keywords d-flex flex-wrap gap-1">{group.keywords.map((keyword) => <span key={keyword} className="badge rounded-pill text-bg-light border text-secondary">{keyword}</span>)}</div> : null}
+            <p className="small text-uppercase text-secondary fw-semibold mb-1">Thema</p>
+            <h3 className="h5 mb-1 board-column-title">{group.title}</h3>
+            {group.description ? <p className="board-column-description text-secondary mb-2">{group.description}</p> : null}
+            {typeBadges.length > 0 ? (
+              <div className="board-group-kinds d-flex flex-wrap gap-1">
+                {typeBadges.map((item) => (
+                  <span key={`${group.key}-${item.category}`} className="badge rounded-pill board-kind-badge">
+                    {item.label}
+                  </span>
+                ))}
+              </div>
+            ) : null}
           </div>
           <span className="badge rounded-pill text-bg-light border text-secondary">{group.notes.length}</span>
         </div>
-
-        {kindBadges.length > 0 ? <div className="board-group-kinds d-flex flex-wrap gap-1">{kindBadges.map((item) => <span key={`${item.key || 'neutral'}-${item.label}`} className="badge rounded-pill board-kind-badge">{item.label}</span>)}</div> : null}
 
         <div className="board-column-body vstack gap-3 flex-grow-1 overflow-auto pe-1">
           {group.notes.length === 0 ? (
@@ -1647,6 +1638,7 @@ function SettingsModal(props: {
   reportDownload: string
   routineStatus: string
   onRunAllNotesRoutine: () => void
+  onRunBoardGroupingRoutine: () => void
   onDeleteAllNotes: () => void
   onRefreshLlmLogs: () => void
   llmLogs: LlmLogEntry[]
@@ -1751,6 +1743,21 @@ function SettingsModal(props: {
             <div className="form-text">Dieser Text wird der KI zusammen mit der Zusammenfassung übergeben.</div>
           </div>
 
+          <div className="col-12">
+            <label className="form-label fw-semibold" htmlFor="settings-group-prefix">
+              Gruppierungs-Prompt
+            </label>
+            <textarea
+              id="settings-group-prefix"
+              className="form-control"
+              rows={5}
+              value={props.settingsDraft.groupPromptPrefix}
+              onChange={(event) => props.setSettingsDraft((current) => ({ ...current, groupPromptPrefix: event.target.value }))}
+              placeholder="Prompt für die KI-Gruppierung …"
+            />
+            <div className="form-text">Dieser Prompt steuert, wie die KI aus allen Notizen thematische Board-Spalten bildet.</div>
+          </div>
+
         </div>
 
         <div className="d-flex flex-wrap gap-2 mt-4">
@@ -1759,6 +1766,9 @@ function SettingsModal(props: {
           </button>
           <button className="btn btn-outline-primary" onClick={props.onRunAllNotesRoutine} type="button">
             Kategorien neu erstellen
+          </button>
+          <button className="btn btn-outline-primary" onClick={props.onRunBoardGroupingRoutine} type="button">
+            Gruppen neu erstellen
           </button>
           <button className="btn btn-outline-primary" onClick={props.onExportTechnicalReport} type="button">
             Tech-Report exportieren

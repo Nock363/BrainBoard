@@ -34,8 +34,20 @@ export interface SettingsResponse {
   followUpModel: string
   language: string
   categoryPromptPrefix: string
+  groupPromptPrefix: string
   dataDir: string
   mediaDir: string
+}
+
+export interface BoardGroup {
+  key: string
+  title: string
+  description: string
+  notes: NoteNode[]
+}
+
+export interface BoardGroupsResponse {
+  groups: BoardGroup[]
 }
 
 export interface NotesResponse {
