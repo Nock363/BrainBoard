@@ -58,6 +58,7 @@ export const api = {
     summaryModel?: string
     followUpModel?: string
     language?: string
+    summaryPromptPrefix?: string
     categoryPromptPrefix?: string
     groupPromptPrefix?: string
   }): Promise<SettingsResponse> {

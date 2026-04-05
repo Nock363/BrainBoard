@@ -17,6 +17,7 @@ type SettingsDraft = {
   summaryModel: string
   followUpModel: string
   language: string
+  summaryPromptPrefix: string
   categoryPromptPrefix: string
   groupPromptPrefix: string
 }
@@ -441,6 +442,7 @@ export default function App() {
     summaryModel: '',
     followUpModel: '',
     language: '',
+    summaryPromptPrefix: '',
     categoryPromptPrefix: '',
     groupPromptPrefix: '',
   })
@@ -507,6 +509,7 @@ export default function App() {
       summaryModel: response.summaryModel,
       followUpModel: response.followUpModel,
       language: response.language,
+      summaryPromptPrefix: response.summaryPromptPrefix,
       categoryPromptPrefix: response.categoryPromptPrefix,
       groupPromptPrefix: response.groupPromptPrefix,
     })
@@ -759,6 +762,7 @@ export default function App() {
         summaryModel: settingsDraft.summaryModel.trim() || undefined,
         followUpModel: settingsDraft.followUpModel.trim() || undefined,
         language: settingsDraft.language.trim() || undefined,
+        summaryPromptPrefix: settingsDraft.summaryPromptPrefix,
         categoryPromptPrefix: settingsDraft.categoryPromptPrefix,
         groupPromptPrefix: settingsDraft.groupPromptPrefix,
       }),
@@ -772,6 +776,7 @@ export default function App() {
       summaryModel: response.summaryModel,
       followUpModel: response.followUpModel,
       language: response.language,
+      summaryPromptPrefix: response.summaryPromptPrefix,
       categoryPromptPrefix: response.categoryPromptPrefix,
       groupPromptPrefix: response.groupPromptPrefix,
     }))
@@ -1462,6 +1467,7 @@ function StickyNoteCard(props: {
         props.onOpen()
       }
     }}>
+      <h3 className="sticky-note-title mb-1">{noteTitle(props.note)}</h3>
       <div className="sticky-note-kind text-uppercase small fw-semibold">{categoryLabel(props.note.category)}</div>
       <p className="sticky-note-summary mb-0">{summary}</p>
 
@@ -1534,6 +1540,11 @@ function NoteDetailPage(props: {
       </div>
 
       <div className="detail-note-card vstack gap-3 flex-grow-1">
+        <header className="detail-title-block">
+          <p className="detail-label text-uppercase small fw-semibold mb-1">Überschrift</p>
+          <h2 className="detail-note-title mb-0">{noteTitle(note)}</h2>
+        </header>
+
         <article className="detail-summary-block">
           <p className="detail-label text-uppercase small fw-semibold mb-2">Zusammenfassung</p>
           <p className="detail-summary-text mb-0">{note.summary || 'Noch keine Zusammenfassung vorhanden.'}</p>
@@ -1725,6 +1736,23 @@ function SettingsModal(props: {
                 value={props.settingsDraft.summaryModel}
                 onChange={(event) => props.setSettingsDraft((current) => ({ ...current, summaryModel: event.target.value }))}
               />
+            </div>
+          </div>
+
+          <div className="col-12">
+            <label className="form-label fw-semibold" htmlFor="settings-summary-prefix">
+              Transkript-Zusammenfassungs-Prompt
+            </label>
+            <textarea
+              id="settings-summary-prefix"
+              className="form-control"
+              rows={7}
+              value={props.settingsDraft.summaryPromptPrefix}
+              onChange={(event) => props.setSettingsDraft((current) => ({ ...current, summaryPromptPrefix: event.target.value }))}
+              placeholder="Prompt für die Transkript-Zusammenfassung …"
+            />
+            <div className="form-text">
+              Dieser Prompt steuert, wie aus einem Transkript eine kurze Überschrift und ein klarer Fließtext erzeugt werden.
             </div>
           </div>
 

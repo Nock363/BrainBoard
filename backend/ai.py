@@ -25,6 +25,14 @@ DEFAULT_GROUP_PROMPT_PREFIX = (
     "Jede Notiz muss genau einer Gruppe zugeordnet werden."
 )
 
+DEFAULT_SUMMARY_PROMPT_PREFIX = (
+    "Fasse das folgende Transkript zusammen. Die Zusammenfassung soll einen klaren Fließtext darstellen, "
+    "indem alles drin steht, was im Transkript stand. Zudem soll eine kurze und prägnante Überschrift erstellt werden. "
+    "Ausgeben sollst du es in folgenden Format:\n\n"
+    "<headline>...</headline>\n"
+    "<text>...</text>"
+)
+
 
 STOP_WORDS = {
     "und",
@@ -244,15 +252,76 @@ def infer_local_summary(text: str) -> dict[str, Any]:
             "summary": "",
         }
 
-    sentences = re.split(r"(?<=[.!?])\s+", clean)
-    headline = sentences[0] if sentences else clean
-    headline = headline[:72].strip().rstrip(".,;:") or "Neue Notiz"
+    headline = _shorten_headline(clean)
     summary = clean if len(clean) <= 220 else f"{clean[:217].rstrip()}..."
 
     return {
         "summaryHeadline": headline,
         "summary": summary,
     }
+
+
+def _shorten_headline(text: str, max_words: int = 5, max_length: int = 42) -> str:
+    clean = _clean_text(text)
+    if not clean:
+        return "Neue Notiz"
+
+    words = clean.split()
+    headline = " ".join(words[:max_words]).strip().rstrip(".,;:")
+    if len(headline) > max_length:
+        headline = headline[:max_length].rsplit(" ", 1)[0].strip().rstrip(".,;:") or headline[:max_length].strip().rstrip(".,;:")
+    return headline or "Neue Notiz"
+
+
+def _extract_summary_payload(raw_text: str, fallback_text: str) -> dict[str, str]:
+    clean_raw = _clean_text(raw_text)
+    if not clean_raw:
+        return infer_local_summary(fallback_text)
+
+    parsed_headline = ""
+    parsed_summary = ""
+
+    try:
+        parsed = json.loads(clean_raw)
+        if isinstance(parsed, dict):
+            parsed_headline = _clean_text(str(parsed.get("headline") or parsed.get("summaryHeadline") or ""))
+            parsed_summary = _clean_text(str(parsed.get("text") or parsed.get("summary") or ""))
+    except Exception:
+        pass
+
+    if not parsed_headline or not parsed_summary:
+        match = re.search(r"<headline>(.*?)</headline>\s*<text>(.*?)</text>", raw_text, re.IGNORECASE | re.DOTALL)
+        if match:
+            parsed_headline = parsed_headline or _clean_text(match.group(1))
+            parsed_summary = parsed_summary or _clean_text(match.group(2))
+
+    if not parsed_headline or not parsed_summary:
+        fallback = infer_local_summary(fallback_text)
+        parsed_headline = parsed_headline or fallback["summaryHeadline"]
+        parsed_summary = parsed_summary or fallback["summary"]
+
+    return {
+        "summaryHeadline": _shorten_headline(parsed_headline),
+        "summary": parsed_summary or _clean_text(fallback_text),
+    }
+
+
+def _summary_prompt_from_prefix(prompt_prefix: str, input_label: str, content: str) -> list[dict[str, str]]:
+    clean_prefix = _clean_text(prompt_prefix) or DEFAULT_SUMMARY_PROMPT_PREFIX
+    clean_content = _clean_text(content)
+    return [
+        {
+            "role": "system",
+            "content": (
+                "Du bist ein präziser Zusammenfasser für BrainSession. "
+                "Halte dich strikt an das gewünschte Ausgabeformat aus der Nutzeranweisung."
+            ),
+        },
+        {
+            "role": "user",
+            "content": f"{clean_prefix}\n\n{input_label}:\n{clean_content}",
+        },
+    ]
 def _openai_headers(api_key: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {api_key.strip()}", "Content-Type": "application/json"}
 
@@ -413,7 +482,7 @@ def _compact_note_group_payload(note: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def interpret_text_note(api_key: str, model: str, text: str) -> dict[str, Any]:
+def interpret_text_note(api_key: str, model: str, text: str, prompt_prefix: str) -> dict[str, Any]:
     clean_key = api_key.strip()
     clean_text = _clean_text(text)
     if not clean_key:
@@ -423,30 +492,13 @@ def interpret_text_note(api_key: str, model: str, text: str) -> dict[str, Any]:
 
     payload = {
         "model": model.strip() or "gpt-4o-mini",
-        "input": [
-            {
-                "role": "system",
-                "content": (
-                    "Du erzeugst fuer eine BrainSession-Notiz nur eine kurze deutschsprachige Zusammenfassung. "
-                    "Antworte nur als JSON mit summaryHeadline und summary. "
-                    "summaryHeadline soll maximal fuenf Woerter haben und catchy klingen. "
-                    "Die Zusammenfassung soll den gesamten Inhalt knapp und integriert wiedergeben."
-                ),
-            },
-            {"role": "user", "content": f"Notiztext:\n{clean_text}"},
-        ],
-        "text": {"format": {"type": "json_schema", "name": "note_summary", "schema": _build_summary_schema()}},
+        "input": _summary_prompt_from_prefix(prompt_prefix, "Transkript", clean_text),
     }
     log_entry = _make_llm_log_entry("Zusammenfassung", payload["model"], _normalize_messages(payload["input"]))
     try:
         response = _openai_responses(clean_key, payload)
         raw = _extract_output_text(response)
-        parsed = json.loads(raw)
-        fallback = infer_local_summary(clean_text)
-        result = {
-            "summaryHeadline": _clean_text(str(parsed.get("summaryHeadline", ""))) or fallback["summaryHeadline"],
-            "summary": _clean_text(str(parsed.get("summary", ""))) or fallback["summary"],
-        }
+        result = _extract_summary_payload(raw, clean_text)
         log_entry["response"] = _format_summary_log(result["summaryHeadline"], result["summary"])
         _emit_llm_log(log_entry)
         return result
@@ -585,6 +637,7 @@ def summarize_note_timeline(
     model: str,
     note_title: str,
     entry_transcripts: list[str],
+    prompt_prefix: str,
 ) -> dict[str, Any]:
     clean_key = api_key.strip()
     entries = [f"Teilnotiz {index + 1}: {_clean_text(text)}" for index, text in enumerate(entry_transcripts) if _clean_text(text)]
@@ -593,62 +646,26 @@ def summarize_note_timeline(
     if not clean_key:
         joined = " ".join(entries)
         return {
-            "summaryHeadline": _clean_text(note_title)[:72] or "Neue Notiz",
+            "summaryHeadline": _shorten_headline(note_title or joined),
             "summary": joined[:600] if len(joined) <= 600 else f"{joined[:597].rstrip()}...",
         }
 
     payload = {
         "model": model.strip() or "gpt-4o",
-        "input": [
-            {
-                "role": "system",
-                "content": (
-                    "Du erstellst eine strukturierte deutsche Zusammenfassung einer fortlaufenden Notiz. "
-                    "Fruehere Aussagen koennen spaeter ergaenzt oder korrigiert werden. "
-                    "Die spaeteren Angaben haben Vorrang, wenn sie im Verlauf eine fruehere Aussage revidieren. "
-                    "Die Ausgabe muss JSON sein mit summaryHeadline und summary. "
-                    "summaryHeadline soll maximal fuenf Woerter haben und die gesamte Notiz knapp benennen. "
-                    "Formuliere die Zusammenfassung integriert, nicht als einfache Listenfolge."
-                ),
-            },
-            {"role": "user", "content": f"Notiztitel: {_clean_text(note_title) or 'Neue Notiz'}\n\nVerlauf:\n" + "\n\n".join(entries)},
-        ],
-        "text": {
-            "format": {
-                "type": "json_schema",
-                "name": "note_timeline_summary",
-                "schema": {
-                    "type": "object",
-                    "additionalProperties": False,
-                    "properties": {
-                        "summaryHeadline": {"type": "string"},
-                        "summary": {"type": "string"},
-                    },
-                    "required": ["summaryHeadline", "summary"],
-                },
-            }
-        },
+        "input": _summary_prompt_from_prefix(prompt_prefix, "Transkriptverlauf", f"Notiztitel: {_clean_text(note_title) or 'Neue Notiz'}\n\nVerlauf:\n" + "\n\n".join(entries)),
     }
     log_entry = _make_llm_log_entry("Zusammenfassung", payload["model"], _normalize_messages(payload["input"]), note_title=note_title)
     try:
         response = _openai_responses(clean_key, payload)
         raw = _extract_output_text(response)
-        parsed = json.loads(raw)
-        summary = _clean_text(str(parsed.get("summary", "")))
-        if not summary:
-            raise ValueError("No summary returned")
-        summary_headline = _clean_text(str(parsed.get("summaryHeadline", "")))
-        result = {
-            "summaryHeadline": summary_headline,
-            "summary": summary,
-        }
+        result = _extract_summary_payload(raw, " ".join(entries))
         log_entry["response"] = _format_summary_log(result["summaryHeadline"], result["summary"])
         _emit_llm_log(log_entry)
         return result
     except Exception:
         joined = " ".join(entries)
         fallback = {
-            "summaryHeadline": _clean_text(note_title)[:72] or "Neue Notiz",
+            "summaryHeadline": _shorten_headline(note_title or joined),
             "summary": entries[-1] if entries else joined,
         }
         log_entry["error"] = "Konnte Verlauf nicht zusammenfassen; lokaler Fallback verwendet."

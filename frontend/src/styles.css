@@ -225,6 +225,15 @@ main {
   transform: none;
 }
 
+.sticky-note-title {
+  margin-bottom: 0;
+  color: inherit;
+  font-size: 1.08rem;
+  line-height: 1.22;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+
 .sticky-note-card::before {
   content: '';
   position: absolute;
@@ -295,6 +304,7 @@ main {
 }
 
 .sticky-note-summary {
+  font-size: 0.97rem;
   color: rgba(255, 255, 255, 0.94);
   line-height: 1.55;
   white-space: normal;
@@ -303,6 +313,7 @@ main {
 }
 
 .sticky-note-card.sticky-note-neutral .sticky-note-summary,
+.sticky-note-card.sticky-note-neutral .sticky-note-title,
 .sticky-note-card.sticky-note-neutral .sticky-note-kind,
 .sticky-note-card.sticky-note-neutral .text-secondary,
 .sticky-note-card.sticky-note-neutral .text-muted {
@@ -650,6 +661,7 @@ main {
 }
 
 .detail-note-surface.sticky-note-neutral .detail-label,
+.detail-note-surface.sticky-note-neutral .detail-note-title,
 .detail-note-surface.sticky-note-neutral .detail-summary-text,
 .detail-note-surface.sticky-note-neutral .detail-transcript-body {
   color: #0f172a;
@@ -726,13 +738,25 @@ main {
   padding: 0.35rem 0 0.2rem;
 }
 
+.detail-title-block {
+  padding: 0.1rem 0 0.2rem;
+}
+
+.detail-note-title {
+  font-size: clamp(1.8rem, 3.6vw, 2.45rem);
+  line-height: 1.08;
+  letter-spacing: -0.03em;
+  font-weight: 800;
+  word-break: break-word;
+}
+
 .detail-label {
   color: rgba(255, 255, 255, 0.82);
   letter-spacing: 0.08em;
 }
 
 .detail-summary-text {
-  font-size: clamp(1.2rem, 2.6vw, 1.7rem);
+  font-size: clamp(1.05rem, 2.1vw, 1.4rem);
   line-height: 1.48;
   white-space: pre-wrap;
 }

@@ -22,6 +22,7 @@ from backend.ai import (
     transcribe_audio,
     DEFAULT_CATEGORY_PROMPT_PREFIX,
     DEFAULT_GROUP_PROMPT_PREFIX,
+    DEFAULT_SUMMARY_PROMPT_PREFIX,
 )
 from backend.config import get_config
 from backend.models import (
@@ -133,6 +134,7 @@ def default_settings(config) -> dict[str, object]:
         "summaryModel": config.summary_model,
         "followUpModel": config.follow_up_model,
         "language": config.language,
+        "summaryPromptPrefix": DEFAULT_SUMMARY_PROMPT_PREFIX,
         "categoryPromptPrefix": DEFAULT_CATEGORY_PROMPT_PREFIX,
         "groupPromptPrefix": DEFAULT_GROUP_PROMPT_PREFIX,
     }
@@ -146,18 +148,23 @@ def group_prompt_prefix_from(settings: dict[str, object]) -> str:
     return clean_text_value(settings.get("groupPromptPrefix")) or DEFAULT_GROUP_PROMPT_PREFIX
 
 
+def summary_prompt_prefix_from(settings: dict[str, object]) -> str:
+    return clean_text_value(settings.get("summaryPromptPrefix")) or DEFAULT_SUMMARY_PROMPT_PREFIX
+
+
 def build_note_from_text(
     text: str,
     *,
     api_key: str,
     summary_model: str,
+    summary_prompt_prefix: str,
     category_prompt_prefix: str,
     create_entry_kind: str = "text",
     audio_relative_path: str = "",
     transcription_state: str = "done",
     transcription_error: str = "",
 ) -> dict[str, object]:
-    summary_result = interpret_text_note(api_key, summary_model, text)
+    summary_result = interpret_text_note(api_key, summary_model, text, summary_prompt_prefix)
     note_id = make_note_id()
     entry_id = make_entry_id()
     now = utc_now()
@@ -193,6 +200,7 @@ def reanalyze_note(
     *,
     api_key: str,
     summary_model: str,
+    summary_prompt_prefix: str,
     category_prompt_prefix: str,
 ) -> dict[str, object]:
     transcripts = [str(item.get("transcript", "")).strip() for item in note.get("entries", []) if isinstance(item, dict) and str(item.get("transcript", "")).strip()]
@@ -202,6 +210,7 @@ def reanalyze_note(
         note,
         api_key=api_key,
         summary_model=summary_model,
+        summary_prompt_prefix=summary_prompt_prefix,
         category_prompt_prefix=category_prompt_prefix,
     )
     return note
@@ -212,6 +221,7 @@ def recompute_summary(
     *,
     api_key: str,
     summary_model: str,
+    summary_prompt_prefix: str,
     category_prompt_prefix: str,
 ) -> dict[str, object]:
     entries = [str(entry.get("transcript", "")).strip() for entry in note.get("entries", []) if isinstance(entry, dict)]
@@ -223,6 +233,7 @@ def recompute_summary(
         model=summary_model,
         note_title=clean_text_value(note.get("title")),
         entry_transcripts=entries,
+        prompt_prefix=summary_prompt_prefix,
     )
     summary_headline = clean_text_value(summary_result.get("summaryHeadline")) or clean_text_value(note.get("title")) or "Neue Notiz"
     note["summary"] = clean_text_value(summary_result.get("summary")) or clean_text_value(note.get("summary"))
@@ -266,6 +277,7 @@ def get_settings() -> SettingsResponse:
         summaryModel=str(current.get("summaryModel", config.summary_model)),
         followUpModel=str(current.get("followUpModel", config.follow_up_model)),
         language=str(current.get("language", config.language)),
+        summaryPromptPrefix=summary_prompt_prefix_from(current),
         categoryPromptPrefix=category_prompt_prefix_from(current),
         groupPromptPrefix=group_prompt_prefix_from(current),
         dataDir=str(config.data_dir),
@@ -289,6 +301,8 @@ def update_settings(payload: UpdateSettingsRequest) -> SettingsResponse:
         current["followUpModel"] = payload.followUpModel.strip()
     if payload.language is not None and payload.language.strip():
         current["language"] = payload.language.strip()
+    if payload.summaryPromptPrefix is not None:
+        current["summaryPromptPrefix"] = payload.summaryPromptPrefix.strip() or DEFAULT_SUMMARY_PROMPT_PREFIX
     if payload.categoryPromptPrefix is not None:
         current["categoryPromptPrefix"] = payload.categoryPromptPrefix.strip() or DEFAULT_CATEGORY_PROMPT_PREFIX
     if payload.groupPromptPrefix is not None:
@@ -396,6 +410,7 @@ def create_text_note(payload: CreateTextNoteRequest) -> NoteResponse:
         payload.text,
         api_key=api_key,
         summary_model=str(current_settings.get("summaryModel") or settings.summaryModel),
+        summary_prompt_prefix=summary_prompt_prefix_from(current_settings),
         category_prompt_prefix=category_prompt_prefix_from(current_settings),
     )
     store.save_note(note)
@@ -467,6 +482,7 @@ async def create_voice_note(
                 transcript,
                 api_key=api_key,
                 summary_model=summary_model,
+                summary_prompt_prefix=summary_prompt_prefix_from(current_settings),
                 category_prompt_prefix=category_prompt_prefix_from(current_settings),
                 create_entry_kind="voice",
                 audio_relative_path=relative_path,
@@ -478,7 +494,7 @@ async def create_voice_note(
             note_result["updatedAt"] = utc_now()
             note = note_result
         else:
-            summary_result = interpret_text_note(api_key, summary_model, transcript)
+            summary_result = interpret_text_note(api_key, summary_model, transcript, summary_prompt_prefix_from(current_settings))
             if not clean_text_value(note.get("title")):
                 note["title"] = clean_text_value(summary_result.get("summaryHeadline")) or note.get("title", "Neue Notiz")
             if not note.get("summary"):
@@ -487,6 +503,8 @@ async def create_voice_note(
                 note,
                 api_key=api_key,
                 summary_model=summary_model,
+                summary_prompt_prefix=summary_prompt_prefix_from(current_settings),
+                category_prompt_prefix=category_prompt_prefix_from(current_settings),
             )
     except Exception as error:
         entry["transcriptionState"] = "pending_retry"
@@ -537,6 +555,7 @@ def append_text_to_note(note_id: str, payload: AppendTextRequest) -> NoteRespons
                 note,
                 api_key=api_key,
                 summary_model=summary_model,
+                summary_prompt_prefix=summary_prompt_prefix_from(current_settings),
                 category_prompt_prefix=category_prompt_prefix_from(current_settings),
             )
         except Exception:
@@ -547,10 +566,11 @@ def append_text_to_note(note_id: str, payload: AppendTextRequest) -> NoteRespons
                 note,
                 api_key="",
                 summary_model=summary_model,
+                summary_prompt_prefix=summary_prompt_prefix_from(current_settings),
                 category_prompt_prefix=category_prompt_prefix_from(current_settings),
             )
         except Exception:
-            summary_result = interpret_text_note("", summary_model, "\n".join(transcripts))
+            summary_result = interpret_text_note("", summary_model, "\n".join(transcripts), summary_prompt_prefix_from(current_settings))
             note["summaryHeadline"] = summary_result["summaryHeadline"]
             note["summary"] = summary_result["summary"]
             note["title"] = summary_result["summaryHeadline"]
@@ -575,6 +595,7 @@ def regenerate_summary(note_id: str) -> NoteResponse:
         note,
         api_key=api_key,
         summary_model=summary_model,
+        summary_prompt_prefix=summary_prompt_prefix_from(current_settings),
         category_prompt_prefix=category_prompt_prefix_from(current_settings),
     )
     note["updatedAt"] = utc_now()
@@ -621,6 +642,7 @@ def reanalyze_all_notes() -> RoutineResponse:
                 note,
                 api_key=api_key,
                 summary_model=summary_model,
+                summary_prompt_prefix=summary_prompt_prefix_from(current_settings),
                 category_prompt_prefix=category_prompt_prefix_from(current_settings),
             )
             note["updatedAt"] = utc_now()
@@ -667,6 +689,8 @@ def retry_transcription(note_id: str, entry_id: str) -> NoteResponse:
         note,
         api_key=api_key,
         summary_model=summary_model,
+        summary_prompt_prefix=summary_prompt_prefix_from(current_settings),
+        category_prompt_prefix=category_prompt_prefix_from(current_settings),
     )
     store.save_note(note)
     return NoteResponse(note=note_to_model(note, lambda rel: f"/media/{rel}"))
