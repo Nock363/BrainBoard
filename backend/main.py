@@ -29,6 +29,7 @@ from backend.models import (
     AppendTextRequest,
     BoardGroupItem,
     BoardGroupsResponse,
+    BoardGroupsSaveRequest,
     CreateTextNoteRequest,
     NoteNode,
     NoteResponse,
@@ -67,7 +68,9 @@ def clean_text_value(value: object) -> str:
 
 def resolve_note_category(note: dict[str, object]) -> str:
     if "manualCategory" in note:
-        return validate_note_category(clean_text_value(note.get("manualCategory")))
+        manual_category = validate_note_category(clean_text_value(note.get("manualCategory")))
+        if manual_category:
+            return manual_category
 
     category = clean_text_value(note.get("category"))
     if category in {"Idea", "Task"}:
@@ -120,6 +123,65 @@ def note_to_model(note: dict[str, object], media_url_fn) -> NoteNode:
         createdAt=clean_text_value(note.get("createdAt")),
         updatedAt=clean_text_value(note.get("updatedAt")),
     )
+
+
+def build_board_groups_response(group_defs: list[dict[str, object]], notes: list[dict[str, object]]) -> BoardGroupsResponse:
+    note_map = {
+        str(note.get("id", "")): note
+        for note in notes
+        if isinstance(note, dict) and str(note.get("id", "")).strip()
+    }
+    seen_note_ids: set[str] = set()
+    response_groups: list[BoardGroupItem] = []
+
+    for index, group in enumerate(group_defs):
+        if not isinstance(group, dict):
+            continue
+        group_title = clean_text_value(group.get("title")) or f"Gruppe {index + 1}"
+        group_description = clean_text_value(group.get("description"))
+        group_notes: list[NoteNode] = []
+        for note_id in group.get("noteIds", []):
+            clean_note_id = clean_text_value(note_id)
+            if not clean_note_id or clean_note_id in seen_note_ids:
+                continue
+            note = note_map.get(clean_note_id)
+            if note is None:
+                continue
+            seen_note_ids.add(clean_note_id)
+            group_notes.append(note_to_model(note, lambda rel: f"/media/{rel}"))
+        if not group_notes:
+            continue
+        response_groups.append(
+            BoardGroupItem(
+                key=clean_text_value(group.get("key")) or f"group-{index}-{re.sub(r'[^a-z0-9]+', '-', group_title.lower()).strip('-') or 'board'}",
+                title=group_title,
+                description=group_description,
+                notes=group_notes,
+            )
+        )
+
+    unassigned_notes = [note for note in notes if str(note.get("id", "")) not in seen_note_ids]
+    if unassigned_notes:
+        response_groups.append(
+            BoardGroupItem(
+                key="group-unassigned",
+                title="Nicht zugeordnet",
+                description="Notizen ohne eindeutige thematische Gruppe.",
+                notes=[note_to_model(note, lambda rel: f"/media/{rel}") for note in unassigned_notes],
+            )
+        )
+
+    if not response_groups and notes:
+        response_groups.append(
+            BoardGroupItem(
+                key="group-empty",
+                title="Nicht zugeordnet",
+                description="Keine gespeicherten Gruppen vorhanden.",
+                notes=[note_to_model(note, lambda rel: f"/media/{rel}") for note in notes],
+            )
+        )
+
+    return BoardGroupsResponse(groups=response_groups)
 
 
 def model_to_dict(model: NoteNode) -> dict[str, object]:
@@ -248,6 +310,21 @@ config = get_config()
 store = BrainSessionStore(config.data_dir, config.db_path, config.settings_path, config.media_dir)
 set_llm_logger(store.save_llm_log)
 
+
+def normalize_note_categories() -> None:
+    for note in store.list_notes():
+        category = clean_text_value(note.get("category"))
+        if category not in {"Idea", "Task"}:
+            continue
+        if clean_text_value(note.get("manualCategory")) == category:
+            continue
+        note["manualCategory"] = category
+        note["updatedAt"] = utc_now()
+        store.save_note(note)
+
+
+normalize_note_categories()
+
 app = FastAPI(title="BrainSession PWA", version="0.1.0")
 app.add_middleware(
     CORSMiddleware,
@@ -316,6 +393,30 @@ def list_notes() -> NotesResponse:
     return NotesResponse(notes=[note_to_model(note, lambda rel: f"/media/{rel}") for note in store.list_notes()])
 
 
+@app.get("/api/board-groups", response_model=BoardGroupsResponse)
+def list_board_groups() -> BoardGroupsResponse:
+    stored_groups = store.load_board_groups()
+    if not stored_groups:
+        return BoardGroupsResponse(groups=[])
+    return build_board_groups_response(stored_groups, store.list_notes())
+
+
+@app.put("/api/board-groups", response_model=BoardGroupsResponse)
+def save_board_groups(payload: BoardGroupsSaveRequest) -> BoardGroupsResponse:
+    groups = [
+        {
+            "key": group.key,
+            "title": group.title,
+            "description": group.description,
+            "noteIds": group.noteIds,
+        }
+        for group in payload.groups
+        if clean_text_value(group.title) and len([note_id for note_id in group.noteIds if clean_text_value(note_id)]) >= 1
+    ]
+    store.save_board_groups(groups)
+    return build_board_groups_response(groups, store.list_notes())
+
+
 @app.post("/api/routines/group-notes", response_model=BoardGroupsResponse)
 def group_notes() -> BoardGroupsResponse:
     current_settings = {**default_settings(config), **store.load_settings()}
@@ -329,63 +430,8 @@ def group_notes() -> BoardGroupsResponse:
         prompt_prefix=group_prompt_prefix,
         notes=notes,
     )
-
-    note_map = {
-        str(note.get("id", "")): note
-        for note in notes
-        if isinstance(note, dict) and str(note.get("id", "")).strip()
-    }
-    seen_note_ids: set[str] = set()
-    response_groups: list[BoardGroupItem] = []
-
-    for index, group in enumerate(grouped_notes):
-        group_title = clean_text_value(group.get("title")) or f"Gruppe {index + 1}"
-        group_description = clean_text_value(group.get("description"))
-        group_note_ids: list[str] = []
-        group_notes: list[NoteNode] = []
-        for note_id in group.get("noteIds", []):
-            clean_note_id = clean_text_value(note_id)
-            if not clean_note_id or clean_note_id in seen_note_ids:
-                continue
-            note = note_map.get(clean_note_id)
-            if note is None:
-                continue
-            seen_note_ids.add(clean_note_id)
-            group_note_ids.append(clean_note_id)
-            group_notes.append(note_to_model(note, lambda rel: f"/media/{rel}"))
-        if not group_notes:
-            continue
-        response_groups.append(
-            BoardGroupItem(
-                key=f"group-{index}-{re.sub(r'[^a-z0-9]+', '-', group_title.lower()).strip('-') or 'board'}",
-                title=group_title,
-                description=group_description,
-                notes=group_notes,
-            )
-        )
-
-    unassigned_notes = [note for note in notes if str(note.get("id", "")) not in seen_note_ids]
-    if unassigned_notes:
-        response_groups.append(
-            BoardGroupItem(
-                key="group-unassigned",
-                title="Nicht zugeteilt",
-                description="Notizen ohne eindeutige thematische Gruppe.",
-                notes=[note_to_model(note, lambda rel: f"/media/{rel}") for note in unassigned_notes],
-            )
-        )
-
-    if not response_groups:
-        response_groups.append(
-            BoardGroupItem(
-                key="group-empty",
-                title="Nicht zugeteilt",
-                description="Keine Notizen vorhanden.",
-                notes=[],
-            )
-        )
-
-    return BoardGroupsResponse(groups=response_groups)
+    store.save_board_groups(grouped_notes)
+    return build_board_groups_response(grouped_notes, notes)
 
 
 @app.get("/api/llm-logs", response_model=LlmLogsResponse)
@@ -616,7 +662,10 @@ def update_note_category(note_id: str, payload: UpdateNoteCategoryRequest) -> No
     try:
         validated_category = validate_note_category(payload.category)
         note["category"] = validated_category
-        note["manualCategory"] = validated_category
+        if validated_category:
+            note["manualCategory"] = validated_category
+        else:
+            note.pop("manualCategory", None)
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     note["updatedAt"] = utc_now()
@@ -705,6 +754,7 @@ def delete_note(note_id: str) -> dict[str, object]:
 @app.delete("/api/notes")
 def delete_all_notes() -> dict[str, object]:
     store.delete_all_notes()
+    store.delete_board_groups()
     return {"ok": True}
 
 

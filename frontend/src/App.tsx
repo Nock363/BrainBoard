@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react'
 import { api, mediaUrl } from './api'
 import { useVoiceRecorder } from './hooks/useVoiceRecorder'
-import type { BoardGroup, LlmLogEntry, NoteCategory, NoteNode, SettingsResponse, TabKey } from './types'
+import type { BoardGroup, BoardGroupDraft, LlmLogEntry, NoteCategory, NoteNode, SettingsResponse, TabKey } from './types'
 
 type BusyState = { message: string } | null
 
@@ -336,7 +336,7 @@ function createBoardGroups(notes: NoteNode[]): BoardGroup[] {
   if (unassignedNotes.length > 0) {
     groupedClusters.unshift({
       key: 'unassigned',
-      title: 'Nicht zugeteilt',
+      title: 'Nicht zugeordnet',
       description: 'Notizen ohne klare thematische Gruppe.',
       notes: unassignedNotes,
     })
@@ -434,6 +434,7 @@ export default function App() {
   const [deleteNoteTarget, setDeleteNoteTarget] = useState<NoteNode | null>(null)
   const [deleteAllOpen, setDeleteAllOpen] = useState(false)
   const [boardGroups, setBoardGroups] = useState<BoardGroup[]>([])
+  const [boardGroupsLoading, setBoardGroupsLoading] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [routineStatus, setRoutineStatus] = useState('')
   const [settingsDraft, setSettingsDraft] = useState<SettingsDraft>({
@@ -478,15 +479,40 @@ export default function App() {
 
   const selectedNote = useMemo(() => notes.find((note) => note.id === selectedNoteId) ?? null, [notes, selectedNoteId])
 
-  const reloadBoardGroups = async (nextNotes: NoteNode[] = notes) => {
+  const persistBoardGroups = async (groups: BoardGroup[]) => {
+    const drafts: BoardGroupDraft[] = groups.map((group) => ({
+      key: group.key,
+      title: group.title,
+      description: group.description,
+      noteIds: group.notes.map((note) => note.id),
+    }))
     try {
-      const response = await api.groupNotes()
-      setBoardGroups(response.groups)
-      return response.groups
+      await api.saveBoardGroups(drafts)
+    } catch {
+      // Cache persistence should not block rendering.
+    }
+  }
+
+  const reloadBoardGroups = async (nextNotes: NoteNode[] = notes) => {
+    setBoardGroupsLoading(true)
+    try {
+      const response = await api.loadBoardGroups()
+      if (response.groups.length > 0) {
+        setBoardGroups(response.groups)
+        return response.groups
+      }
+
+      const fallbackGroups = createBoardGroups(nextNotes)
+      setBoardGroups(fallbackGroups)
+      void persistBoardGroups(fallbackGroups)
+      return fallbackGroups
     } catch {
       const fallbackGroups = createBoardGroups(nextNotes)
       setBoardGroups(fallbackGroups)
+      void persistBoardGroups(fallbackGroups)
       return fallbackGroups
+    } finally {
+      setBoardGroupsLoading(false)
     }
   }
 
@@ -709,9 +735,10 @@ export default function App() {
   }
 
   const runBoardGroupingRoutine = async () => {
-    const groups = await runBusy('Gruppen werden neu erstellt …', async () => reloadBoardGroups())
+    const groups = await runBusy('Gruppen werden neu erstellt …', async () => api.groupNotes())
+    setBoardGroups(groups.groups)
     await loadLlmLogs()
-    setRoutineStatus(`Gruppen neu erstellt: ${groups.length} Spalten`)
+    setRoutineStatus(`Gruppen neu erstellt: ${groups.groups.length} Spalten`)
   }
 
   const deleteSelectedNote = async () => {
@@ -973,6 +1000,7 @@ export default function App() {
               <div className="desktop-board-grid flex-grow-1 min-h-0">
                 <BoardView
                   groups={boardGroups}
+                  loading={boardGroupsLoading}
                   selectedNoteId={selectedNoteId}
                   onOpenNote={openNoteDetail}
                   onTogglePlayback={(id, url) => void playAudio(id, url)}
@@ -1119,6 +1147,7 @@ export default function App() {
               <section className="page-panel h-100 d-flex flex-column gap-3">
               <BoardView
                 groups={boardGroups}
+                loading={boardGroupsLoading}
                 selectedNoteId={selectedNoteId}
                 onOpenNote={openNoteDetail}
                 onTogglePlayback={(id, url) => void playAudio(id, url)}
@@ -1362,6 +1391,7 @@ function InboxView(props: {
 
 function BoardView(props: {
   groups: BoardGroup[]
+  loading: boolean
   selectedNoteId: string
   onOpenNote: (noteId: string) => void
   onTogglePlayback: (id: string, url: string) => void
@@ -1391,8 +1421,24 @@ function BoardView(props: {
         </div>
       </div>
 
-      {!hasNotes ? (
-        <div className="alert alert-light border shadow-sm mb-0">Noch keine Notizen vorhanden. Sobald du erste Einträge erfasst, bildet die KI daraus thematische Spalten.</div>
+      {props.loading ? (
+        <div className="board-loading-stage card border-0 shadow-sm mb-0">
+          <div className="card-body p-4 d-flex flex-column align-items-center justify-content-center text-center gap-3">
+            <div className="board-loading-spinner spinner-border text-primary" role="status" aria-hidden="true" />
+            <div>
+              <p className="small text-uppercase text-secondary fw-semibold mb-1">Gruppen werden vorbereitet</p>
+              <h3 className="h5 mb-2">Einen Moment bitte</h3>
+              <p className="text-secondary mb-0">Die Poster-Gruppen werden gerade geladen und zusammengestellt. Danach erscheinen sie automatisch hier.</p>
+            </div>
+            <div className="board-loading-pile w-100 d-flex flex-column gap-2">
+              <div className="board-loading-cover skeleton-card" />
+              <div className="board-loading-note skeleton-card" />
+              <div className="board-loading-note board-loading-note-secondary skeleton-card" />
+            </div>
+          </div>
+        </div>
+      ) : !hasNotes ? (
+        <div className="alert alert-light border shadow-sm mb-0">Noch keine Notizen vorhanden. Sobald du erste Einträge erfasst, bildet die KI daraus thematische Poster-Gruppen.</div>
       ) : (
         <div className="board-row flex-grow-1 d-flex gap-3 overflow-auto pb-2">
           {props.groups.map((group) => (

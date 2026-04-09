@@ -47,6 +47,13 @@ export interface BoardGroup {
   notes: NoteNode[]
 }
 
+export interface BoardGroupDraft {
+  key: string
+  title: string
+  description: string
+  noteIds: string[]
+}
+
 export interface BoardGroupsResponse {
   groups: BoardGroup[]
 }

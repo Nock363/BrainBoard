@@ -5,6 +5,7 @@ import shutil
 import sqlite3
 import threading
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -52,6 +53,16 @@ class BrainSessionStore:
                 """
             )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_llm_logs_created_at ON llm_logs(created_at DESC)")
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS board_groups (
+                    id TEXT PRIMARY KEY,
+                    payload TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
 
     def list_notes(self) -> list[dict[str, Any]]:
         with self._lock, self._connect() as conn:
@@ -109,6 +120,49 @@ class BrainSessionStore:
         for row in rows:
             logs.append(json.loads(row["payload"]))
         return logs
+
+    def load_board_groups(self) -> list[dict[str, Any]]:
+        with self._lock, self._connect() as conn:
+            row = conn.execute("SELECT payload FROM board_groups WHERE id = ?", ("board_groups",)).fetchone()
+        if row is None:
+            return []
+        try:
+            payload = json.loads(row["payload"])
+        except Exception:
+            return []
+        groups = payload.get("groups") if isinstance(payload, dict) else []
+        return groups if isinstance(groups, list) else []
+
+    def save_board_groups(self, groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        payload = {
+            "id": "board_groups",
+            "groups": groups,
+        }
+        encoded = json.dumps(payload, ensure_ascii=False, indent=2)
+        now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+        with self._lock, self._connect() as conn:
+            existing = conn.execute("SELECT created_at FROM board_groups WHERE id = ?", ("board_groups",)).fetchone()
+            created_at = str(existing["created_at"]).strip() if existing else now
+            conn.execute(
+                """
+                INSERT INTO board_groups (id, payload, created_at, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    payload = excluded.payload,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    "board_groups",
+                    encoded,
+                    created_at,
+                    now,
+                ),
+            )
+        return groups
+
+    def delete_board_groups(self) -> None:
+        with self._lock, self._connect() as conn:
+            conn.execute("DELETE FROM board_groups WHERE id = ?", ("board_groups",))
 
     def delete_note(self, note_id: str) -> None:
         with self._lock, self._connect() as conn:

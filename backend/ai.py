@@ -579,6 +579,7 @@ def group_notes_by_theme(
                     "Du gruppierst BrainSession-Notizen auf einem Board. "
                     "Analysiere alle Notizen als Gesamtheit und ordne sie thematisch in wenige klare Spalten. "
                     "Eine Gruppe darf Notizen, To-Dos und Ideen gemeinsam enthalten. "
+                    "Erstelle nur Gruppen mit mindestens zwei Notizen; einzelne Notizen gehören nicht in eine eigene Gruppe. "
                     "Jede Notiz muss genau einer Gruppe zugeordnet werden. "
                     "Gib pro Gruppe einen kurzen Titel und eine kurze Beschreibung. "
                     "Antworte nur als JSON mit groups."
@@ -616,7 +617,7 @@ def group_notes_by_theme(
             title = _clean_text(str(group.get("title", "")))
             description = _clean_text(str(group.get("description", "")))
             note_ids = _normalize_list(group.get("noteIds", []))
-            if not title or not note_ids:
+            if not title or len(note_ids) < 2:
                 continue
             groups.append({"title": title, "description": description, "noteIds": note_ids})
 

@@ -104,6 +104,17 @@ class BoardGroupsResponse(BaseModel):
     groups: list[BoardGroupItem] = Field(default_factory=list)
 
 
+class BoardGroupDraft(BaseModel):
+    key: str
+    title: str
+    description: str = ""
+    noteIds: list[str] = Field(default_factory=list)
+
+
+class BoardGroupsSaveRequest(BaseModel):
+    groups: list[BoardGroupDraft] = Field(default_factory=list)
+
+
 class LlmLogMessage(BaseModel):
     role: Literal["system", "user", "assistant", "meta"]
     content: str

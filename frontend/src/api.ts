@@ -1,4 +1,5 @@
 import type {
+  BoardGroupDraft,
   LlmLogsResponse,
   BoardGroupsResponse,
   NoteResponse,
@@ -69,6 +70,15 @@ export const api = {
   },
   async listNotes(): Promise<NotesResponse> {
     return requestJson('/api/notes')
+  },
+  async loadBoardGroups(): Promise<BoardGroupsResponse> {
+    return requestJson('/api/board-groups')
+  },
+  async saveBoardGroups(groups: BoardGroupDraft[]): Promise<BoardGroupsResponse> {
+    return requestJson('/api/board-groups', {
+      method: 'PUT',
+      body: JSON.stringify({ groups }),
+    })
   },
   async getNote(noteId: string): Promise<NoteResponse> {
     return requestJson(`/api/notes/${encodeURIComponent(noteId)}`)
