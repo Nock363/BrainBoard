@@ -425,6 +425,7 @@ export default function App() {
   const [notes, setNotes] = useState<NoteNode[]>([])
   const [settings, setSettings] = useState<SettingsResponse | null>(null)
   const [selectedNoteId, setSelectedNoteId] = useState('')
+  const [expandedInboxNoteId, setExpandedInboxNoteId] = useState('')
   const [noteDraft, setNoteDraft] = useState('')
   const [textNoteOpen, setTextNoteOpen] = useState(false)
   const [busy, setBusy] = useState<BusyState>(null)
@@ -495,6 +496,9 @@ export default function App() {
     await reloadBoardGroups(response.notes)
     if (selectedNoteId && !response.notes.some((note) => note.id === selectedNoteId)) {
       setSelectedNoteId('')
+    }
+    if (expandedInboxNoteId && !response.notes.some((note) => note.id === expandedInboxNoteId)) {
+      setExpandedInboxNoteId('')
     }
     return response.notes
   }
@@ -620,6 +624,17 @@ export default function App() {
   const openNoteDetail = (noteId: string) => {
     pushAppState(activeTab, noteId)
     setSelectedNoteId(noteId)
+  }
+
+  const toggleInboxNoteExpansion = (noteId: string) => {
+    setExpandedInboxNoteId((current) => (current === noteId ? '' : noteId))
+  }
+
+  const openExpandedInboxNoteDetail = () => {
+    if (!expandedInboxNoteId) {
+      return
+    }
+    openNoteDetail(expandedInboxNoteId)
   }
 
   const closeNoteDetail = () => {
@@ -750,6 +765,7 @@ export default function App() {
     await runBusy('Alle Notizen werden gelöscht …', async () => api.deleteAllNotes())
     setDeleteAllOpen(false)
     setSelectedNoteId('')
+    setExpandedInboxNoteId('')
     await reloadNotes()
   }
 
@@ -1092,8 +1108,9 @@ export default function App() {
               <section className="page-panel h-100 d-flex flex-column gap-3">
               <InboxView
                 notes={notes}
-                selectedNoteId={selectedNoteId}
-                onOpenNote={openNoteDetail}
+                expandedNoteId={expandedInboxNoteId}
+                onToggleExpandNote={toggleInboxNoteExpansion}
+                onOpenNoteDetail={openExpandedInboxNoteDetail}
                 onTogglePlayback={(id, url) => void playAudio(id, url)}
                 currentlyPlayingId={playingId}
               />
@@ -1266,11 +1283,14 @@ function SparkView(props: {
 
 function InboxView(props: {
   notes: NoteNode[]
-  selectedNoteId: string
-  onOpenNote: (noteId: string) => void
+  expandedNoteId: string
+  onToggleExpandNote: (noteId: string) => void
+  onOpenNoteDetail: () => void
   onTogglePlayback: (id: string, url: string) => void
   currentlyPlayingId: string
 }) {
+  const noteCount = props.notes.length
+
   return (
     <section className="inbox-view h-100 d-flex flex-column gap-3">
       <div className="card border-0 shadow-sm">
@@ -1278,33 +1298,61 @@ function InboxView(props: {
           <div className="d-flex align-items-start justify-content-between gap-3">
             <div>
               <p className="small text-uppercase text-secondary fw-semibold mb-1">Eingang</p>
-              <h2 className="h3 mb-0">Post-its</h2>
+              <h2 className="h3 mb-0">Post-it-Stapel</h2>
             </div>
-            <span className="badge rounded-pill text-bg-light border text-secondary">{props.notes.length}</span>
+            <span className="badge rounded-pill text-bg-light border text-secondary">{noteCount}</span>
           </div>
-          <p className="text-secondary mb-0">Jedes Post-it zeigt nur die Zusammenfassung und zwei Aktionen: Audio und Transkript.</p>
+          <p className="text-secondary mb-0">Die Karten liegen gestapelt. Erst der Titel ist sichtbar, ein Klick klappt die ganze Notiz auf.</p>
         </div>
       </div>
 
       {props.notes.length === 0 ? (
         <div className="alert alert-light border shadow-sm mb-0">Noch keine Notizen vorhanden. Starte eine Sprachnotiz oder lege Text direkt an.</div>
       ) : (
-        <div className="inbox-list vstack gap-3 flex-grow-1">
-          {props.notes.map((note) => (
-            <StickyNoteCard
+        <div className="inbox-list stacked-note-pile flex-grow-1">
+          {props.notes.map((note, index) => (
+            <div
               key={note.id}
-              note={note}
-              selected={props.selectedNoteId === note.id}
-              compact={false}
-              onOpen={() => props.onOpenNote(note.id)}
-              onTogglePlayback={() => {
-                const audioPath = noteAudioPath(note)
-                if (audioPath) {
-                  props.onTogglePlayback(note.id, mediaUrl(audioPath))
-                }
-              }}
-              playing={props.currentlyPlayingId === note.id}
-            />
+              className={`stacked-note-item ${props.expandedNoteId === note.id ? 'stacked-note-item-expanded' : ''}`}
+              style={{ zIndex: props.expandedNoteId === note.id ? 1000 : index + 1 }}
+            >
+              <StickyNoteCard
+                note={note}
+                selected={false}
+                compact={false}
+                stacked
+                floating={false}
+                ghost={props.expandedNoteId === note.id}
+                onOpen={() => props.onToggleExpandNote(note.id)}
+                onOpenDetail={undefined}
+                onTogglePlayback={() => {
+                  const audioPath = noteAudioPath(note)
+                  if (audioPath) {
+                    props.onTogglePlayback(note.id, mediaUrl(audioPath))
+                  }
+                }}
+                playing={props.currentlyPlayingId === note.id}
+              />
+              {props.expandedNoteId === note.id ? (
+                <StickyNoteCard
+                  note={note}
+                  selected
+                  compact={false}
+                  stacked
+                  floating
+                  ghost={false}
+                  onOpen={() => props.onToggleExpandNote(note.id)}
+                  onOpenDetail={props.onOpenNoteDetail}
+                  onTogglePlayback={() => {
+                    const audioPath = noteAudioPath(note)
+                    if (audioPath) {
+                      props.onTogglePlayback(note.id, mediaUrl(audioPath))
+                    }
+                  }}
+                  playing={props.currentlyPlayingId === note.id}
+                />
+              ) : null}
+            </div>
           ))}
         </div>
       )}
@@ -1428,6 +1476,9 @@ function BoardGroupView(props: {
                 note={note}
                 selected={props.selectedNoteId === note.id}
                 compact
+                stacked={false}
+                floating={false}
+                ghost={false}
                 onOpen={() => props.onOpenNote(note.id)}
                 onTogglePlayback={() => {
                   const audioPath = noteAudioPath(note)
@@ -1449,61 +1500,100 @@ function StickyNoteCard(props: {
   note: NoteNode
   selected: boolean
   compact: boolean
+  stacked: boolean
+  floating: boolean
+  ghost: boolean
   onOpen: () => void
+  onOpenDetail?: () => void
   onTogglePlayback: () => void
   playing: boolean
 }) {
   const summary = noteSummary(props.note)
   const hasAudio = Boolean(noteAudioPath(props.note))
   const hasTranscript = Boolean(safeText(props.note.rawTranscript).trim())
-  const noteClasses = ['sticky-note-card', categoryThemeClass(props.note.category), props.compact ? 'sticky-note-card-compact' : '', props.selected ? 'selected' : '']
+  const isExpanded = !props.stacked || props.selected
+  const openTranscriptTarget = props.onOpenDetail ?? props.onOpen
+  const noteClasses = [
+    'sticky-note-card',
+    categoryThemeClass(props.note.category),
+    props.compact ? 'sticky-note-card-compact' : '',
+    props.stacked ? 'sticky-note-card-stacked' : '',
+    props.floating ? 'sticky-note-card-floating' : '',
+    props.ghost ? 'sticky-note-card-ghost' : '',
+    props.selected ? 'selected' : '',
+  ]
     .filter(Boolean)
     .join(' ')
 
   return (
-    <article className={noteClasses} role="button" tabIndex={0} onClick={props.onOpen} onKeyDown={(event) => {
-      if (event.key === 'Enter' || event.key === ' ') {
-        event.preventDefault()
-        props.onOpen()
-      }
-    }}>
+    <article
+      className={noteClasses}
+      role="button"
+      tabIndex={0}
+      aria-expanded={isExpanded}
+      onClick={props.onOpen}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault()
+          props.onOpen()
+        }
+      }}
+    >
       <h3 className="sticky-note-title mb-1">{noteTitle(props.note)}</h3>
       <div className="sticky-note-kind text-uppercase small fw-semibold">{categoryLabel(props.note.category)}</div>
-      <p className="sticky-note-summary mb-0">{summary}</p>
+      {isExpanded ? (
+        <>
+          <p className="sticky-note-summary mb-0">{summary}</p>
 
-      <div className="sticky-note-actions d-flex gap-2 mt-3">
-        <button
-          className="btn btn-sm btn-light flex-grow-1 sticky-note-action-button"
-          onClick={(event) => {
-            event.stopPropagation()
-            if (hasAudio) {
-              props.onTogglePlayback()
-            }
-          }}
-          type="button"
-          disabled={!hasAudio}
-          aria-label={hasAudio ? (props.playing ? 'Audio anhalten' : 'Audio abspielen') : 'Keine Audio verfügbar'}
-        >
-          <i className={`bi ${props.playing ? 'bi-pause-fill' : 'bi-play-fill'} me-1`} aria-hidden="true" />
-          {hasAudio ? (props.playing ? 'Pause' : 'Audio') : 'Keine Audio'}
-        </button>
+          <div className="sticky-note-actions d-flex gap-2 mt-3">
+            <button
+              className="btn btn-sm btn-light flex-grow-1 sticky-note-action-button"
+              onClick={(event) => {
+                event.stopPropagation()
+                if (hasAudio) {
+                  props.onTogglePlayback()
+                }
+              }}
+              type="button"
+              disabled={!hasAudio}
+              aria-label={hasAudio ? (props.playing ? 'Audio anhalten' : 'Audio abspielen') : 'Keine Audio verfügbar'}
+            >
+              <i className={`bi ${props.playing ? 'bi-pause-fill' : 'bi-play-fill'} me-1`} aria-hidden="true" />
+              {hasAudio ? (props.playing ? 'Pause' : 'Audio') : 'Keine Audio'}
+            </button>
 
-        <button
-          className="btn btn-sm btn-outline-light flex-grow-1 sticky-note-action-button"
-          onClick={(event) => {
-            event.stopPropagation()
-            if (hasTranscript) {
-              props.onOpen()
-            }
-          }}
-          type="button"
-          disabled={!hasTranscript}
-          aria-label={hasTranscript ? 'Rohes Transkript anzeigen' : 'Kein Transkript verfügbar'}
-        >
-          <i className="bi bi-file-text me-1" aria-hidden="true" />
-          Transkript
-        </button>
-      </div>
+            <button
+              className="btn btn-sm btn-outline-light flex-grow-1 sticky-note-action-button"
+              onClick={(event) => {
+                event.stopPropagation()
+                if (hasTranscript) {
+                  openTranscriptTarget()
+                }
+              }}
+              type="button"
+              disabled={!hasTranscript}
+              aria-label={hasTranscript ? 'Rohes Transkript anzeigen' : 'Kein Transkript verfügbar'}
+            >
+              <i className="bi bi-file-text me-1" aria-hidden="true" />
+              Transkript
+            </button>
+          </div>
+
+          {props.onOpenDetail ? (
+            <button
+              className="btn btn-sm btn-outline-light sticky-note-detail-button mt-1"
+              onClick={(event) => {
+                event.stopPropagation()
+                props.onOpenDetail?.()
+              }}
+              type="button"
+            >
+              <i className="bi bi-arrows-angle-expand me-1" aria-hidden="true" />
+              Detail öffnen
+            </button>
+          ) : null}
+        </>
+      ) : null}
     </article>
   )
 }

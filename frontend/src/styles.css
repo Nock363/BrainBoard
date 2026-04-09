@@ -225,6 +225,73 @@ main {
   transform: none;
 }
 
+.stacked-note-pile {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding-top: 0.35rem;
+  padding-bottom: 0.9rem;
+}
+
+.stacked-note-item {
+  position: relative;
+  min-height: 8.4rem;
+  transition: margin-top 200ms ease, transform 200ms ease;
+}
+
+.stacked-note-item + .stacked-note-item {
+  margin-top: -4.4rem;
+}
+
+.stacked-note-item:nth-child(4n + 1) {
+  margin-left: 0;
+  transform: rotate(-0.35deg);
+}
+
+.stacked-note-item:nth-child(4n + 2) {
+  margin-left: 0.1rem;
+  transform: rotate(0.25deg);
+}
+
+.stacked-note-item:nth-child(4n + 3) {
+  margin-left: 0.18rem;
+  transform: rotate(-0.2deg);
+}
+
+.stacked-note-item:nth-child(4n) {
+  margin-left: 0.06rem;
+  transform: rotate(0.3deg);
+}
+
+.stacked-note-item:hover {
+  z-index: 50 !important;
+}
+
+.stacked-note-item-expanded {
+  z-index: 100 !important;
+}
+
+.sticky-note-card-stacked {
+  min-height: 8.4rem;
+  padding: 1.15rem 1rem 1.25rem;
+  transform-origin: top center;
+  box-shadow:
+    0 0.35rem 0.95rem rgba(15, 23, 42, 0.08),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.5);
+}
+
+.sticky-note-card-stacked.sticky-note-card-floating {
+  position: absolute;
+  inset: 0 auto auto 0;
+  width: 100%;
+  z-index: 100 !important;
+}
+
+.sticky-note-card-ghost {
+  visibility: hidden;
+  pointer-events: none;
+}
+
 .sticky-note-title {
   margin-bottom: 0;
   color: inherit;
@@ -312,6 +379,15 @@ main {
   overflow: visible;
 }
 
+.sticky-note-card-stacked .sticky-note-title {
+  font-size: 1.12rem;
+  line-height: 1.16;
+}
+
+.sticky-note-card-stacked .sticky-note-kind {
+  font-size: 0.7rem;
+}
+
 .sticky-note-card.sticky-note-neutral .sticky-note-summary,
 .sticky-note-card.sticky-note-neutral .sticky-note-title,
 .sticky-note-card.sticky-note-neutral .sticky-note-kind,
@@ -340,6 +416,11 @@ main {
 
 .sticky-note-actions {
   flex-wrap: wrap;
+}
+
+.sticky-note-detail-button {
+  align-self: flex-start;
+  border-radius: 999px;
 }
 
 .sticky-note-action-button {
