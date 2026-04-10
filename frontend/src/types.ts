@@ -33,6 +33,7 @@ export interface SettingsResponse {
   summaryModel: string
   followUpModel: string
   language: string
+  transcriptionPrompt: string
   summaryPromptPrefix: string
   categoryPromptPrefix: string
   groupPromptPrefix: string

@@ -33,6 +33,13 @@ DEFAULT_SUMMARY_PROMPT_PREFIX = (
     "<text>...</text>"
 )
 
+DEFAULT_TRANSCRIPTION_PROMPT = (
+    "Das hier ist eine deutsche Sprachmemo für BrainSession. "
+    "Transkribiere nur klar hörbare Worte, erfinde nichts dazu und halte den Wortlaut möglichst genau fest. "
+    "Bewahre Eigennamen, Zahlen, Abkürzungen, Produktnamen und Aufzählungen. "
+    "Wenn etwas unklar ist, lasse es lieber weg statt zu raten."
+)
+
 
 STOP_WORDS = {
     "und",
@@ -763,7 +770,7 @@ def transcribe_audio(
         "Transkription",
         model.strip() or "whisper-1",
         [
-            {"role": "system", "content": _clean_text(prompt) or "Transkribiere das Audio als deutsche Notiz."},
+            {"role": "system", "content": _clean_text(prompt) or DEFAULT_TRANSCRIPTION_PROMPT},
             {
                 "role": "user",
                 "content": f"Datei: {audio_path.name}\nSprache: {language.strip() or 'de'}",

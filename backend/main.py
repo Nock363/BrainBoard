@@ -22,6 +22,7 @@ from backend.ai import (
     transcribe_audio,
     DEFAULT_CATEGORY_PROMPT_PREFIX,
     DEFAULT_GROUP_PROMPT_PREFIX,
+    DEFAULT_TRANSCRIPTION_PROMPT,
     DEFAULT_SUMMARY_PROMPT_PREFIX,
 )
 from backend.config import get_config
@@ -266,6 +267,7 @@ def default_settings(config) -> dict[str, object]:
         "summaryModel": config.summary_model,
         "followUpModel": config.follow_up_model,
         "language": config.language,
+        "transcriptionPrompt": DEFAULT_TRANSCRIPTION_PROMPT,
         "summaryPromptPrefix": DEFAULT_SUMMARY_PROMPT_PREFIX,
         "categoryPromptPrefix": DEFAULT_CATEGORY_PROMPT_PREFIX,
         "groupPromptPrefix": DEFAULT_GROUP_PROMPT_PREFIX,
@@ -282,6 +284,10 @@ def group_prompt_prefix_from(settings: dict[str, object]) -> str:
 
 def summary_prompt_prefix_from(settings: dict[str, object]) -> str:
     return clean_text_value(settings.get("summaryPromptPrefix")) or DEFAULT_SUMMARY_PROMPT_PREFIX
+
+
+def transcription_prompt_from(settings: dict[str, object]) -> str:
+    return clean_text_value(settings.get("transcriptionPrompt")) or DEFAULT_TRANSCRIPTION_PROMPT
 
 
 def build_note_from_text(
@@ -425,6 +431,7 @@ def get_settings() -> SettingsResponse:
         summaryModel=str(current.get("summaryModel", config.summary_model)),
         followUpModel=str(current.get("followUpModel", config.follow_up_model)),
         language=str(current.get("language", config.language)),
+        transcriptionPrompt=transcription_prompt_from(current),
         summaryPromptPrefix=summary_prompt_prefix_from(current),
         categoryPromptPrefix=category_prompt_prefix_from(current),
         groupPromptPrefix=group_prompt_prefix_from(current),
@@ -449,6 +456,8 @@ def update_settings(payload: UpdateSettingsRequest) -> SettingsResponse:
         current["followUpModel"] = payload.followUpModel.strip()
     if payload.language is not None and payload.language.strip():
         current["language"] = payload.language.strip()
+    if payload.transcriptionPrompt is not None:
+        current["transcriptionPrompt"] = payload.transcriptionPrompt.strip() or DEFAULT_TRANSCRIPTION_PROMPT
     if payload.summaryPromptPrefix is not None:
         current["summaryPromptPrefix"] = payload.summaryPromptPrefix.strip() or DEFAULT_SUMMARY_PROMPT_PREFIX
     if payload.categoryPromptPrefix is not None:
@@ -568,6 +577,7 @@ async def create_voice_note(
     summary_model = str(current_settings.get("summaryModel") or config.summary_model)
     transcription_model = str(current_settings.get("transcriptionModel") or config.transcription_model)
     language = str(current_settings.get("language") or config.language)
+    transcription_prompt = transcription_prompt_from(current_settings)
     ext = file_extension_for_upload(audio)
     audio_bytes = await audio.read()
     if not audio_bytes:
@@ -613,7 +623,7 @@ async def create_voice_note(
             audio_path=store.media_dir / relative_path,
             model=transcription_model,
             language=language,
-            prompt="Das hier ist eine deutsche Sprachmemo. Transkribiere nur klar hörbare Worte. Erfinde nichts.",
+            prompt=transcription_prompt,
         )
         entry["transcript"] = transcript
         entry["transcriptionState"] = "done"
@@ -823,6 +833,73 @@ def reanalyze_all_notes() -> RoutineResponse:
     return RoutineResponse(ok=True, updatedNotes=updated_notes, skippedNotes=skipped_notes)
 
 
+@app.post("/api/routines/retranscribe-notes", response_model=RoutineResponse)
+def retranscribe_all_notes() -> RoutineResponse:
+    current_settings = {**default_settings(config), **store.load_settings()}
+    api_key = str(current_settings.get("openAiApiKey") or "")
+    summary_model = str(current_settings.get("summaryModel") or config.summary_model)
+    transcription_model = str(current_settings.get("transcriptionModel") or config.transcription_model)
+    language = str(current_settings.get("language") or config.language)
+    transcription_prompt = transcription_prompt_from(current_settings)
+    if not api_key:
+        raise HTTPException(status_code=400, detail="OpenAI API key fehlt")
+
+    updated_notes = 0
+    skipped_notes = 0
+    for note in store.list_notes():
+        entries = [item for item in note.get("entries", []) if isinstance(item, dict) and item.get("kind") == "voice"]
+        if not entries:
+            skipped_notes += 1
+            continue
+
+        changed = False
+        for entry in entries:
+            audio_rel = str(entry.get("audioRelativePath", ""))
+            if not audio_rel:
+                continue
+            try:
+                transcript = transcribe_audio(
+                    api_key=api_key,
+                    audio_path=store.media_dir / audio_rel,
+                    model=transcription_model,
+                    language=language,
+                    prompt=transcription_prompt,
+                )
+            except Exception:
+                skipped_notes += 1
+                continue
+
+            entry["transcript"] = transcript
+            entry["transcriptionState"] = "done"
+            entry["transcriptionError"] = ""
+            entry["updatedAt"] = utc_now()
+            changed = True
+
+        if not changed:
+            skipped_notes += 1
+            continue
+
+        note.pop("manualTranscript", None)
+        transcripts = [
+            str(item.get("transcript", "")).strip()
+            for item in note.get("entries", [])
+            if isinstance(item, dict) and str(item.get("transcript", "")).strip()
+        ]
+        note["rawTranscript"] = "\n".join(transcripts)
+        note = recompute_summary(
+            note,
+            api_key=api_key,
+            summary_model=summary_model,
+            summary_prompt_prefix=summary_prompt_prefix_from(current_settings),
+            category_prompt_prefix=category_prompt_prefix_from(current_settings),
+        )
+        note["updatedAt"] = utc_now()
+        store.save_note(note)
+        updated_notes += 1
+
+    return RoutineResponse(ok=True, updatedNotes=updated_notes, skippedNotes=skipped_notes)
+
+
 @app.post("/api/notes/{note_id}/entries/{entry_id}/retry", response_model=NoteResponse)
 def retry_transcription(note_id: str, entry_id: str) -> NoteResponse:
     current_settings = {**default_settings(config), **store.load_settings()}
@@ -830,6 +907,7 @@ def retry_transcription(note_id: str, entry_id: str) -> NoteResponse:
     summary_model = str(current_settings.get("summaryModel") or config.summary_model)
     transcription_model = str(current_settings.get("transcriptionModel") or config.transcription_model)
     language = str(current_settings.get("language") or config.language)
+    transcription_prompt = transcription_prompt_from(current_settings)
     if not api_key:
         raise HTTPException(status_code=400, detail="OpenAI API key fehlt")
     note = store.get_note(note_id)
@@ -846,7 +924,7 @@ def retry_transcription(note_id: str, entry_id: str) -> NoteResponse:
         audio_path=store.media_dir / audio_rel,
         model=transcription_model,
         language=language,
-        prompt="Das hier ist eine deutsche Sprachmemo. Transkribiere nur klar hörbare Worte. Erfinde nichts.",
+        prompt=transcription_prompt,
     )
     entry["transcript"] = transcript
     entry["transcriptionState"] = "done"

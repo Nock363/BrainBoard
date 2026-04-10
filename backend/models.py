@@ -36,6 +36,7 @@ class SettingsResponse(BaseModel):
     summaryModel: str
     followUpModel: str
     language: str
+    transcriptionPrompt: str
     summaryPromptPrefix: str
     categoryPromptPrefix: str
     groupPromptPrefix: str
@@ -50,6 +51,7 @@ class UpdateSettingsRequest(BaseModel):
     summaryModel: str | None = None
     followUpModel: str | None = None
     language: str | None = None
+    transcriptionPrompt: str | None = None
     summaryPromptPrefix: str | None = None
     categoryPromptPrefix: str | None = None
     groupPromptPrefix: str | None = None

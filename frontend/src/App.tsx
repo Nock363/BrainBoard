@@ -17,6 +17,7 @@ type SettingsDraft = {
   summaryModel: string
   followUpModel: string
   language: string
+  transcriptionPrompt: string
   summaryPromptPrefix: string
   categoryPromptPrefix: string
   groupPromptPrefix: string
@@ -462,6 +463,7 @@ export default function App() {
     summaryModel: '',
     followUpModel: '',
     language: '',
+    transcriptionPrompt: '',
     summaryPromptPrefix: '',
     categoryPromptPrefix: '',
     groupPromptPrefix: '',
@@ -637,6 +639,7 @@ export default function App() {
       summaryModel: response.summaryModel,
       followUpModel: response.followUpModel,
       language: response.language,
+      transcriptionPrompt: response.transcriptionPrompt,
       summaryPromptPrefix: response.summaryPromptPrefix,
       categoryPromptPrefix: response.categoryPromptPrefix,
       groupPromptPrefix: response.groupPromptPrefix,
@@ -832,6 +835,13 @@ export default function App() {
     setRoutineStatus(`Kategorien neu erstellt: ${response.updatedNotes} Notizen aktualisiert${response.skippedNotes ? `, ${response.skippedNotes} übersprungen` : ''}`)
   }
 
+  const runAllNotesTranscriptRoutine = async () => {
+    const response = await runBusy('Transkripte werden neu erstellt …', async () => api.retranscribeAllNotes())
+    await reloadNotes()
+    await loadLlmLogs()
+    setRoutineStatus(`Transkripte neu erstellt: ${response.updatedNotes} Notizen aktualisiert${response.skippedNotes ? `, ${response.skippedNotes} übersprungen` : ''}`)
+  }
+
   const runBoardGroupingRoutine = async () => {
     const groups = await runBusy('Gruppen werden neu erstellt …', async () => api.groupNotes())
     setBoardGroups(groups.groups)
@@ -912,6 +922,7 @@ export default function App() {
         summaryModel: settingsDraft.summaryModel.trim() || undefined,
         followUpModel: settingsDraft.followUpModel.trim() || undefined,
         language: settingsDraft.language.trim() || undefined,
+        transcriptionPrompt: settingsDraft.transcriptionPrompt,
         summaryPromptPrefix: settingsDraft.summaryPromptPrefix,
         categoryPromptPrefix: settingsDraft.categoryPromptPrefix,
         groupPromptPrefix: settingsDraft.groupPromptPrefix,
@@ -926,6 +937,7 @@ export default function App() {
       summaryModel: response.summaryModel,
       followUpModel: response.followUpModel,
       language: response.language,
+      transcriptionPrompt: response.transcriptionPrompt,
       summaryPromptPrefix: response.summaryPromptPrefix,
       categoryPromptPrefix: response.categoryPromptPrefix,
       groupPromptPrefix: response.groupPromptPrefix,
@@ -1122,11 +1134,12 @@ export default function App() {
 
           {selectedNote ? (
             <div className="overlay-backdrop overlay-dark desktop-note-backdrop" onClick={closeNoteDetail}>
-              <div className="modal-panel note-detail-panel desktop-note-panel" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-panel note-detail-panel desktop-note-panel" onClick={(event) => event.stopPropagation()}>
           <NoteDetailPage
               note={selectedNote}
               onClose={closeNoteDetail}
               onDeleteNote={() => setDeleteNoteTarget(selectedNote)}
+              onTogglePlayback={(id, url) => void playAudio(id, url)}
               onChangeCategory={(category) => changeSelectedNoteCategory(category)}
               onRebuildNote={() => void rebuildSelectedNote()}
               onReanalyzeCategory={() => void reanalyzeSelectedNoteCategory()}
@@ -1148,6 +1161,7 @@ export default function App() {
               reportDownload={reportDownload}
               routineStatus={routineStatus}
               onRunAllNotesRoutine={() => void runAllNotesRoutine()}
+              onRunAllNotesTranscriptRoutine={() => void runAllNotesTranscriptRoutine()}
               onRunBoardGroupingRoutine={() => void runBoardGroupingRoutine()}
               onDeleteAllNotes={() => setDeleteAllOpen(true)}
               onRefreshLlmLogs={() => void loadLlmLogs()}
@@ -1224,6 +1238,7 @@ export default function App() {
               note={selectedNote}
               onClose={closeNoteDetail}
               onDeleteNote={() => setDeleteNoteTarget(selectedNote)}
+              onTogglePlayback={(id, url) => void playAudio(id, url)}
               onChangeCategory={(category) => changeSelectedNoteCategory(category)}
               onRebuildNote={() => void rebuildSelectedNote()}
               onReanalyzeCategory={() => void reanalyzeSelectedNoteCategory()}
@@ -1332,6 +1347,7 @@ export default function App() {
             reportDownload={reportDownload}
             routineStatus={routineStatus}
             onRunAllNotesRoutine={() => void runAllNotesRoutine()}
+            onRunAllNotesTranscriptRoutine={() => void runAllNotesTranscriptRoutine()}
             onRunBoardGroupingRoutine={() => void runBoardGroupingRoutine()}
             onDeleteAllNotes={() => setDeleteAllOpen(true)}
             onRefreshLlmLogs={() => void loadLlmLogs()}
@@ -1988,6 +2004,7 @@ function NoteDetailPage(props: {
   note: NoteNode
   onClose: () => void
   onDeleteNote: () => void
+  onTogglePlayback: (noteId: string, url: string) => void
   onChangeCategory: (category: NoteCategory) => Promise<void>
   onRebuildNote: () => void
   onReanalyzeCategory: () => void
@@ -2000,6 +2017,8 @@ function NoteDetailPage(props: {
   const [transcriptEditorOpen, setTranscriptEditorOpen] = useState(false)
   const [transcriptDraft, setTranscriptDraft] = useState(note.rawTranscript)
   const [transcriptEditorError, setTranscriptEditorError] = useState('')
+  const audioPath = noteAudioPath(note)
+  const hasAudio = Boolean(audioPath)
 
   useEffect(() => {
     setCategoryDraft(note.category)
@@ -2032,6 +2051,18 @@ function NoteDetailPage(props: {
           <p className="detail-label text-uppercase small fw-semibold mb-2">Zusammenfassung</p>
           <p className="detail-summary-text mb-0">{note.summary || 'Noch keine Zusammenfassung vorhanden.'}</p>
         </article>
+
+        <div className="detail-audio-block">
+          <button
+            className="btn btn-light detail-action-btn"
+            onClick={() => props.onTogglePlayback(note.id, mediaUrl(audioPath))}
+            type="button"
+            disabled={!hasAudio}
+          >
+            <i className={`bi ${hasAudio ? 'bi-play-fill' : 'bi-mic-mute-fill'} me-1`} aria-hidden="true" />
+            {hasAudio ? 'Audio abspielen' : 'Keine Audioaufnahme'}
+          </button>
+        </div>
 
         {note.rawTranscript ? (
           <article className="detail-transcript-block vstack gap-2">
@@ -2210,6 +2241,7 @@ function SettingsModal(props: {
   reportDownload: string
   routineStatus: string
   onRunAllNotesRoutine: () => void
+  onRunAllNotesTranscriptRoutine: () => void
   onRunBoardGroupingRoutine: () => void
   onDeleteAllNotes: () => void
   onRefreshLlmLogs: () => void
@@ -2288,6 +2320,23 @@ function SettingsModal(props: {
             </div>
           </div>
 
+          <div className="col-12">
+            <label className="form-label fw-semibold" htmlFor="settings-transcription-prompt">
+              Transkriptions-Prompt
+            </label>
+            <textarea
+              id="settings-transcription-prompt"
+              className="form-control"
+              rows={6}
+              value={props.settingsDraft.transcriptionPrompt}
+              onChange={(event) => props.setSettingsDraft((current) => ({ ...current, transcriptionPrompt: event.target.value }))}
+              placeholder="Prompt für die Spracherkennung …"
+            />
+            <div className="form-text">
+              Hilfreich für Namen, Fachbegriffe, Satzzeichen und den gewünschten Stil. Je konkreter der Prompt, desto stabiler wird das Ergebnis.
+            </div>
+          </div>
+
           <div className="col-12 col-md-6">
             <div className="input-group">
               <span className="input-group-text">Summary Model</span>
@@ -2355,6 +2404,9 @@ function SettingsModal(props: {
           </button>
           <button className="btn btn-outline-primary" onClick={props.onRunAllNotesRoutine} type="button">
             Kategorien neu erstellen
+          </button>
+          <button className="btn btn-outline-primary" onClick={props.onRunAllNotesTranscriptRoutine} type="button">
+            Transkripte neu erstellen
           </button>
           <button className="btn btn-outline-primary" onClick={props.onRunBoardGroupingRoutine} type="button">
             Gruppen neu erstellen

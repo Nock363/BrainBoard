@@ -59,6 +59,7 @@ export const api = {
     summaryModel?: string
     followUpModel?: string
     language?: string
+    transcriptionPrompt?: string
     summaryPromptPrefix?: string
     categoryPromptPrefix?: string
     groupPromptPrefix?: string
@@ -133,6 +134,12 @@ export const api = {
   },
   async reanalyzeAllNotes(): Promise<RoutineResponse> {
     return requestJson('/api/routines/reanalyze-notes', {
+      method: 'POST',
+      body: '{}',
+    })
+  },
+  async retranscribeAllNotes(): Promise<RoutineResponse> {
+    return requestJson('/api/routines/retranscribe-notes', {
       method: 'POST',
       body: '{}',
     })

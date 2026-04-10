@@ -45,10 +45,9 @@ def get_config() -> AppConfig:
         settings_path=data_dir / "settings.json",
         frontend_dist_dir=frontend_dist_dir,
         openai_api_key=os.getenv("OPENAI_API_KEY", "").strip(),
-        transcription_model=os.getenv("BRAINSESSION_TRANSCRIPTION_MODEL", "whisper-1").strip() or "whisper-1",
+        transcription_model=os.getenv("BRAINSESSION_TRANSCRIPTION_MODEL", "gpt-4o-transcribe").strip() or "gpt-4o-transcribe",
         summary_model=os.getenv("BRAINSESSION_SUMMARY_MODEL", "gpt-4o-mini").strip() or "gpt-4o-mini",
         follow_up_model=os.getenv("BRAINSESSION_FOLLOW_UP_MODEL", "gpt-4o-mini").strip() or "gpt-4o-mini",
         language=os.getenv("BRAINSESSION_LANGUAGE", "de").strip() or "de",
         port=int(os.getenv("PORT", "8000")),
     )
-
