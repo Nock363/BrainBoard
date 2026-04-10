@@ -75,6 +75,10 @@ class UpdateNoteCategoryRequest(BaseModel):
     category: Literal["", "Idea", "Task"]
 
 
+class UpdateNoteTranscriptRequest(BaseModel):
+    transcript: str = Field(min_length=1)
+
+
 class CreateVoiceNoteResponse(BaseModel):
     note: NoteNode
 
@@ -97,6 +101,7 @@ class BoardGroupItem(BaseModel):
     key: str
     title: str
     description: str = ""
+    source: Literal["auto", "manual"] = "auto"
     notes: list[NoteNode] = Field(default_factory=list)
 
 
@@ -108,6 +113,7 @@ class BoardGroupDraft(BaseModel):
     key: str
     title: str
     description: str = ""
+    source: Literal["auto", "manual"] = "manual"
     noteIds: list[str] = Field(default_factory=list)
 
 

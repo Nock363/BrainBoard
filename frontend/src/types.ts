@@ -44,6 +44,7 @@ export interface BoardGroup {
   key: string
   title: string
   description: string
+  source: 'auto' | 'manual'
   notes: NoteNode[]
 }
 
@@ -51,6 +52,7 @@ export interface BoardGroupDraft {
   key: string
   title: string
   description: string
+  source: 'auto' | 'manual'
   noteIds: string[]
 }
 

@@ -34,6 +34,12 @@ type PreparedNoteGroup = {
   weightSum: number
 }
 
+type BoardGroupEditorDraft = BoardGroupDraft
+
+function makeBoardGroupKey(): string {
+  return `manual-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+}
+
 const GROUP_STOP_WORDS = new Set([
   'und',
   'oder',
@@ -317,6 +323,7 @@ function createBoardGroups(notes: NoteNode[]): BoardGroup[] {
         key: `group-${index}`,
         title,
         description: keywordTokens.length > 0 ? `Gemeinsame Begriffe: ${keywordTokens.join(' · ')}` : 'Thematisch ähnliche Notizen aus dem Board.',
+        source: 'auto' as const,
         notes: groupedNotes,
       }
     })
@@ -338,6 +345,7 @@ function createBoardGroups(notes: NoteNode[]): BoardGroup[] {
       key: 'unassigned',
       title: 'Nicht zugeordnet',
       description: 'Notizen ohne klare thematische Gruppe.',
+      source: 'auto' as const,
       notes: unassignedNotes,
     })
   }
@@ -435,6 +443,16 @@ export default function App() {
   const [deleteAllOpen, setDeleteAllOpen] = useState(false)
   const [boardGroups, setBoardGroups] = useState<BoardGroup[]>([])
   const [boardGroupsLoading, setBoardGroupsLoading] = useState(false)
+  const [boardGroupEditorOpen, setBoardGroupEditorOpen] = useState(false)
+  const [boardGroupEditorDraft, setBoardGroupEditorDraft] = useState<BoardGroupEditorDraft>({
+    key: '',
+    title: '',
+    description: '',
+    source: 'manual',
+    noteIds: [],
+  })
+  const [boardGroupEditorMode, setBoardGroupEditorMode] = useState<'create' | 'edit'>('create')
+  const [boardGroupEditorError, setBoardGroupEditorError] = useState('')
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [routineStatus, setRoutineStatus] = useState('')
   const [settingsDraft, setSettingsDraft] = useState<SettingsDraft>({
@@ -484,6 +502,7 @@ export default function App() {
       key: group.key,
       title: group.title,
       description: group.description,
+      source: group.source,
       noteIds: group.notes.map((note) => note.id),
     }))
     try {
@@ -513,6 +532,85 @@ export default function App() {
       return fallbackGroups
     } finally {
       setBoardGroupsLoading(false)
+    }
+  }
+
+  const openBoardGroupEditor = (group?: BoardGroup) => {
+    setBoardGroupEditorMode(group ? 'edit' : 'create')
+    setBoardGroupEditorDraft({
+      key: group?.key ?? makeBoardGroupKey(),
+      title: group?.title ?? '',
+      description: group?.description ?? '',
+      source: 'manual',
+      noteIds: group?.notes.map((note) => note.id) ?? [],
+    })
+    setBoardGroupEditorError('')
+    setBoardGroupEditorOpen(true)
+  }
+
+  const closeBoardGroupEditor = () => {
+    setBoardGroupEditorOpen(false)
+    setBoardGroupEditorError('')
+  }
+
+  const saveBoardGroupEditor = async () => {
+    const title = boardGroupEditorDraft.title.trim()
+    const description = boardGroupEditorDraft.description.trim()
+    const nextSelected = uniqueStrings(boardGroupEditorDraft.noteIds, 999)
+    if (!title) {
+      setBoardGroupEditorError('Bitte gib der Gruppe einen Titel.')
+      return
+    }
+
+    const selectedIds = new Set(nextSelected)
+    const noteById = new Map(notes.map((note) => [note.id, note]))
+    const selectedNotes = nextSelected.map((noteId) => noteById.get(noteId)).filter((note): note is NoteNode => Boolean(note))
+    const selectedNotesById = new Map(selectedNotes.map((note) => [note.id, note]))
+
+    const nextGroups: BoardGroup[] = []
+    for (const group of boardGroups) {
+      if (group.key === boardGroupEditorDraft.key) {
+        continue
+      }
+      const remainingNotes = group.notes.filter((note) => !selectedIds.has(note.id))
+      if (group.source === 'manual') {
+        nextGroups.push({ ...group, notes: remainingNotes })
+        continue
+      }
+      if (remainingNotes.length < 2) {
+        continue
+      }
+      nextGroups.push({ ...group, notes: remainingNotes })
+    }
+
+    nextGroups.push({
+      key: boardGroupEditorDraft.key || makeBoardGroupKey(),
+      title,
+      description,
+      source: 'manual',
+      notes: [...selectedNotesById.values()].sort((left, right) => {
+        const rightTime = new Date(right.updatedAt).getTime()
+        const leftTime = new Date(left.updatedAt).getTime()
+        return rightTime - leftTime
+      }),
+    })
+
+    try {
+      const savedGroups = await runBusy('Gruppe wird gespeichert …', async () => {
+        return api.saveBoardGroups(
+          nextGroups.map((group) => ({
+            key: group.key,
+            title: group.title,
+            description: group.description,
+            source: group.source,
+            noteIds: group.notes.map((note) => note.id),
+          })),
+        )
+      })
+      setBoardGroups(savedGroups.groups)
+      closeBoardGroupEditor()
+    } catch (error) {
+      setBoardGroupEditorError(error instanceof Error ? error.message : 'Die Gruppe konnte nicht gespeichert werden.')
     }
   }
 
@@ -788,6 +886,15 @@ export default function App() {
     await updateNotesFromResponse(response)
   }
 
+  const updateSelectedNoteTranscript = async (transcript: string) => {
+    if (!selectedNote) {
+      return
+    }
+    const noteId = selectedNote.id
+    const response = await runBusy('Transkript wird gespeichert …', async () => api.updateNoteTranscript(noteId, transcript))
+    await updateNotesFromResponse(response)
+  }
+
   const deleteAllNotes = async () => {
     await runBusy('Alle Notizen werden gelöscht …', async () => api.deleteAllNotes())
     setDeleteAllOpen(false)
@@ -1006,6 +1113,8 @@ export default function App() {
                   onTogglePlayback={(id, url) => void playAudio(id, url)}
                   currentlyPlayingId={playingId}
                   onCreateGroups={() => void runBoardGroupingRoutine()}
+                  onCreateGroup={() => openBoardGroupEditor()}
+                  onEditGroup={(group) => openBoardGroupEditor(group)}
                 />
               </div>
             </main>
@@ -1014,14 +1123,15 @@ export default function App() {
           {selectedNote ? (
             <div className="overlay-backdrop overlay-dark desktop-note-backdrop" onClick={closeNoteDetail}>
               <div className="modal-panel note-detail-panel desktop-note-panel" onClick={(event) => event.stopPropagation()}>
-                <NoteDetailPage
-                  note={selectedNote}
-                  onClose={closeNoteDetail}
-                  onDeleteNote={() => setDeleteNoteTarget(selectedNote)}
-                  onChangeCategory={(category) => changeSelectedNoteCategory(category)}
-                  onRebuildNote={() => void rebuildSelectedNote()}
-                  onReanalyzeCategory={() => void reanalyzeSelectedNoteCategory()}
-                />
+          <NoteDetailPage
+              note={selectedNote}
+              onClose={closeNoteDetail}
+              onDeleteNote={() => setDeleteNoteTarget(selectedNote)}
+              onChangeCategory={(category) => changeSelectedNoteCategory(category)}
+              onRebuildNote={() => void rebuildSelectedNote()}
+              onReanalyzeCategory={() => void reanalyzeSelectedNoteCategory()}
+              onUpdateTranscript={(transcript) => updateSelectedNoteTranscript(transcript)}
+            />
               </div>
             </div>
           ) : null}
@@ -1117,6 +1227,7 @@ export default function App() {
               onChangeCategory={(category) => changeSelectedNoteCategory(category)}
               onRebuildNote={() => void rebuildSelectedNote()}
               onReanalyzeCategory={() => void reanalyzeSelectedNoteCategory()}
+              onUpdateTranscript={(transcript) => updateSelectedNoteTranscript(transcript)}
             />
           ) : (
             <div className="page-slider h-100" ref={pageSliderRef} onScroll={handlePageScroll}>
@@ -1153,6 +1264,8 @@ export default function App() {
                 onTogglePlayback={(id, url) => void playAudio(id, url)}
                 currentlyPlayingId={playingId}
                 onCreateGroups={() => void runBoardGroupingRoutine()}
+                onCreateGroup={() => openBoardGroupEditor()}
+                onEditGroup={(group) => openBoardGroupEditor(group)}
               />
               </section>
             </div>
@@ -1190,6 +1303,20 @@ export default function App() {
             onSubmit={() => void submitTextNote()}
             onClose={() => setTextNoteOpen(false)}
             submitting={busy !== null}
+          />
+        )}
+
+        {boardGroupEditorOpen && (
+          <BoardGroupEditorModal
+            mode={boardGroupEditorMode}
+            draft={boardGroupEditorDraft}
+            setDraft={setBoardGroupEditorDraft}
+            notes={notes}
+            groups={boardGroups}
+            error={boardGroupEditorError}
+            onClose={closeBoardGroupEditor}
+            onSave={() => void saveBoardGroupEditor()}
+            saving={busy !== null}
           />
         )}
 
@@ -1397,6 +1524,8 @@ function BoardView(props: {
   onTogglePlayback: (id: string, url: string) => void
   currentlyPlayingId: string
   onCreateGroups: () => void
+  onCreateGroup: () => void
+  onEditGroup: (group: BoardGroup) => void
 }) {
   const hasNotes = props.groups.some((group) => group.notes.length > 0)
 
@@ -1407,17 +1536,23 @@ function BoardView(props: {
           <div className="d-flex align-items-start justify-content-between gap-3">
             <div>
               <p className="small text-uppercase text-secondary fw-semibold mb-1">Board</p>
-              <h2 className="h3 mb-0">Themen-Spalten</h2>
+              <h2 className="h3 mb-0">Eigene Gruppen</h2>
             </div>
             <div className="d-flex flex-column align-items-end gap-2">
-              <button className="btn btn-outline-primary btn-sm" onClick={props.onCreateGroups} type="button">
-                <i className="bi bi-diagram-3-fill me-1" aria-hidden="true" />
-                Neu gruppieren
-              </button>
+              <div className="d-flex flex-wrap justify-content-end gap-2">
+                <button className="btn btn-outline-secondary btn-sm" onClick={props.onCreateGroup} type="button">
+                  <i className="bi bi-folder-plus me-1" aria-hidden="true" />
+                  Neue Gruppe
+                </button>
+                <button className="btn btn-outline-primary btn-sm" onClick={props.onCreateGroups} type="button">
+                  <i className="bi bi-diagram-3-fill me-1" aria-hidden="true" />
+                  Neu gruppieren
+                </button>
+              </div>
               <span className="badge rounded-pill text-bg-light border text-secondary">{props.groups.reduce((count, group) => count + group.notes.length, 0)}</span>
             </div>
           </div>
-          <p className="text-secondary mb-0">Die KI bündelt alle vorhandenen Notizen thematisch in Spalten. Eine Spalte kann Notizen, Ideen und To-Dos gemischt enthalten.</p>
+          <p className="text-secondary mb-0">Eigene Gruppen kannst du mit Titel und Beschreibung anlegen und Karten darin einsortieren. Automatische Gruppen bleiben ebenfalls mit Beschreibung erhalten.</p>
         </div>
       </div>
 
@@ -1440,7 +1575,7 @@ function BoardView(props: {
       ) : !hasNotes ? (
         <div className="alert alert-light border shadow-sm mb-0">Noch keine Notizen vorhanden. Sobald du erste Einträge erfasst, bildet die KI daraus thematische Poster-Gruppen.</div>
       ) : (
-        <div className="board-row flex-grow-1 d-flex gap-3 overflow-auto pb-2">
+        <div className="board-row flex-grow-1 d-flex gap-0 overflow-auto pb-2">
           {props.groups.map((group) => (
             <BoardGroupView
               key={group.key}
@@ -1449,8 +1584,28 @@ function BoardView(props: {
               onTogglePlayback={props.onTogglePlayback}
               currentlyPlayingId={props.currentlyPlayingId}
               selectedNoteId={props.selectedNoteId}
+              onEditGroup={props.onEditGroup}
             />
           ))}
+          <button className="board-column board-column-add card border-0 shadow-sm flex-shrink-0" onClick={props.onCreateGroup} type="button">
+            <div className="card-body p-3 d-flex flex-column gap-2 h-100">
+              <div className="d-flex align-items-start justify-content-between gap-2">
+                <div>
+                  <p className="small text-uppercase text-secondary fw-semibold mb-1">Neue Gruppe</p>
+                  <h3 className="h5 mb-1 board-column-title">Plus hinzufügen</h3>
+                  <p className="board-column-description text-secondary mb-2">Neue Gruppe anlegen.</p>
+                </div>
+              </div>
+
+              <div className="board-column-add-visual flex-grow-1 d-flex align-items-center justify-content-center">
+                <div className="board-column-add-plus" aria-hidden="true">
+                  <i className="bi bi-plus-lg" aria-hidden="true" />
+                </div>
+              </div>
+
+              <div className="board-group-empty text-secondary small mb-0">Tippe, um eine Gruppe zu erstellen.</div>
+            </div>
+          </button>
         </div>
       )}
     </section>
@@ -1463,6 +1618,7 @@ function BoardGroupView(props: {
   onTogglePlayback: (id: string, url: string) => void
   currentlyPlayingId: string
   selectedNoteId: string
+  onEditGroup: (group: BoardGroup) => void
 }) {
   const { group } = props
   const typeCounts = group.notes.reduce<Record<NoteCategory, number>>(
@@ -1496,7 +1652,7 @@ function BoardGroupView(props: {
       <div className="card-body p-3 d-flex flex-column gap-3 h-100">
         <div className="d-flex align-items-start justify-content-between gap-2">
           <div>
-            <p className="small text-uppercase text-secondary fw-semibold mb-1">Thema</p>
+            <p className="small text-uppercase text-secondary fw-semibold mb-1">{group.source === 'manual' ? 'Eigene Gruppe' : 'KI-Gruppe'}</p>
             <h3 className="h5 mb-1 board-column-title">{group.title}</h3>
             {group.description ? <p className="board-column-description text-secondary mb-2">{group.description}</p> : null}
             {typeBadges.length > 0 ? (
@@ -1509,12 +1665,22 @@ function BoardGroupView(props: {
               </div>
             ) : null}
           </div>
-          <span className="badge rounded-pill text-bg-light border text-secondary">{group.notes.length}</span>
+          <div className="d-flex flex-column align-items-end gap-2">
+            <span className="badge rounded-pill text-bg-light border text-secondary">{group.notes.length}</span>
+            {group.source === 'manual' ? (
+              <button className="btn btn-outline-secondary btn-sm board-group-edit-btn" onClick={() => props.onEditGroup(group)} type="button">
+                <i className="bi bi-pencil-square me-1" aria-hidden="true" />
+                Bearbeiten
+              </button>
+            ) : (
+              <span className="badge rounded-pill border board-group-source-badge">Automatisch</span>
+            )}
+          </div>
         </div>
 
         <div className="board-column-body vstack gap-3 flex-grow-1 overflow-auto pe-1">
           {group.notes.length === 0 ? (
-            <div className="text-secondary small">Noch leer.</div>
+            <div className="board-group-empty text-secondary small">Noch leer. Karten kannst du über „Neue Gruppe“ einsortieren.</div>
           ) : (
             group.notes.map((note) => (
               <StickyNoteCard
@@ -1539,6 +1705,180 @@ function BoardGroupView(props: {
         </div>
       </div>
     </article>
+  )
+}
+
+function BoardGroupEditorModal(props: {
+  mode: 'create' | 'edit'
+  draft: BoardGroupEditorDraft
+  setDraft: Dispatch<SetStateAction<BoardGroupEditorDraft>>
+  notes: NoteNode[]
+  groups: BoardGroup[]
+  error: string
+  onClose: () => void
+  onSave: () => void
+  saving: boolean
+}) {
+  const noteAssignments = useMemo(() => {
+    const assignments = new Map<string, string>()
+    for (const group of props.groups) {
+      for (const note of group.notes) {
+        if (!assignments.has(note.id)) {
+          assignments.set(note.id, group.title)
+        }
+      }
+    }
+    return assignments
+  }, [props.groups])
+
+  const orderedNotes = useMemo(
+    () =>
+      [...props.notes].sort((left, right) => {
+        const rightTime = new Date(right.updatedAt).getTime()
+        const leftTime = new Date(left.updatedAt).getTime()
+        return rightTime - leftTime
+      }),
+    [props.notes],
+  )
+
+  const toggleNote = (noteId: string) => {
+    props.setDraft((current) => {
+      const noteIds = current.noteIds.includes(noteId)
+        ? current.noteIds.filter((value) => value !== noteId)
+        : [...current.noteIds, noteId]
+      return { ...current, noteIds }
+    })
+  }
+
+  const selectedCount = props.draft.noteIds.length
+  const allSelected = orderedNotes.length > 0 && props.draft.noteIds.length === orderedNotes.length
+
+  return (
+    <div className="overlay-backdrop overlay-dark" onClick={props.onClose}>
+      <div className="modal-panel board-group-panel" onClick={(event) => event.stopPropagation()}>
+        <div className="d-flex align-items-start justify-content-between gap-3 mb-3">
+          <div>
+            <p className="small text-uppercase text-secondary fw-semibold mb-1">{props.mode === 'create' ? 'Neue Gruppe' : 'Gruppe bearbeiten'}</p>
+            <h3 className="h4 mb-0">Titel, Beschreibung und Karten</h3>
+          </div>
+          <button className="btn btn-outline-secondary btn-sm" onClick={props.onClose} type="button">
+            Schließen
+          </button>
+        </div>
+
+        <div className="row g-3">
+          <div className="col-12 col-lg-5 d-flex flex-column gap-3">
+            <div>
+              <label className="form-label small text-muted fw-semibold" htmlFor="board-group-title">
+                Gruppentitel
+              </label>
+              <input
+                id="board-group-title"
+                className="form-control form-control-lg"
+                value={props.draft.title}
+                onChange={(event) => props.setDraft((current) => ({ ...current, title: event.target.value }))}
+                placeholder="Zum Beispiel Projekt Alpha"
+                autoFocus
+              />
+            </div>
+
+            <div>
+              <label className="form-label small text-muted fw-semibold" htmlFor="board-group-description">
+                Beschreibungstext
+              </label>
+              <textarea
+                id="board-group-description"
+                className="form-control"
+                rows={5}
+                value={props.draft.description}
+                onChange={(event) => props.setDraft((current) => ({ ...current, description: event.target.value }))}
+                placeholder="Worum geht es in dieser Gruppe?"
+              />
+            </div>
+
+            <div className="board-group-meta card border-0 shadow-sm">
+              <div className="card-body p-3 d-flex flex-column gap-2">
+                <div className="d-flex align-items-center justify-content-between gap-2">
+                  <span className="small text-uppercase text-secondary fw-semibold">Ausgewählt</span>
+                  <span className="badge rounded-pill text-bg-light border text-secondary">{selectedCount}</span>
+                </div>
+                <p className="text-secondary mb-0">Wähle die Karten aus, die in dieser Gruppe landen sollen. Beim Speichern werden sie aus anderen Gruppen entfernt.</p>
+                {props.error ? <div className="alert alert-danger mb-0 py-2">{props.error}</div> : null}
+              </div>
+            </div>
+          </div>
+
+          <div className="col-12 col-lg-7">
+            <div className="board-group-selector card border-0 shadow-sm h-100">
+              <div className="card-body p-3 d-flex flex-column gap-3 h-100">
+                <div className="d-flex align-items-center justify-content-between gap-2">
+                  <div>
+                    <p className="small text-uppercase text-secondary fw-semibold mb-1">Karten auswählen</p>
+                    <h4 className="h6 mb-0">Notizen für diese Gruppe</h4>
+                  </div>
+                  <button
+                    className="btn btn-outline-secondary btn-sm"
+                    type="button"
+                    onClick={() =>
+                      props.setDraft((current) => ({
+                        ...current,
+                        noteIds: allSelected ? [] : orderedNotes.map((note) => note.id),
+                      }))
+                    }
+                  >
+                    {allSelected ? 'Alle abwählen' : 'Alle auswählen'}
+                  </button>
+                </div>
+
+                <div className="board-group-note-list vstack gap-2 flex-grow-1 overflow-auto pe-1">
+                  {orderedNotes.length === 0 ? (
+                    <div className="text-secondary small">Noch keine Notizen vorhanden.</div>
+                  ) : (
+                    orderedNotes.map((note) => {
+                      const selected = props.draft.noteIds.includes(note.id)
+                      const currentGroup = noteAssignments.get(note.id)
+                      return (
+                        <button
+                          key={note.id}
+                          type="button"
+                          className={`board-group-note-option ${selected ? 'active' : ''}`}
+                          onClick={() => toggleNote(note.id)}
+                        >
+                          <div className="board-group-note-option-check" aria-hidden="true">
+                            <i className={`bi ${selected ? 'bi-check-lg' : 'bi-plus-lg'}`} />
+                          </div>
+                          <div className="board-group-note-option-content">
+                            <div className="d-flex align-items-start justify-content-between gap-2">
+                              <div className="board-group-note-option-title">{noteTitle(note)}</div>
+                              <span className="badge rounded-pill board-kind-badge board-kind-badge-light">{categoryLabel(note.category)}</span>
+                            </div>
+                            <div className="board-group-note-option-summary text-secondary">{noteSummary(note)}</div>
+                            <div className="d-flex flex-wrap align-items-center gap-2 mt-1">
+                              <span className="badge rounded-pill text-bg-light border text-secondary">{formatRelativeDate(note.updatedAt)}</span>
+                              {currentGroup ? <span className="badge rounded-pill border board-group-note-current">Aktuell: {currentGroup}</span> : null}
+                            </div>
+                          </div>
+                        </button>
+                      )
+                    })
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="d-flex flex-wrap justify-content-end gap-2 mt-3">
+          <button className="btn btn-primary" onClick={props.onSave} type="button" disabled={props.saving || !props.draft.title.trim()}>
+            <i className="bi bi-check2-circle me-1" aria-hidden="true" />
+            Speichern
+          </button>
+          <button className="btn btn-outline-secondary" onClick={props.onClose} type="button">
+            Abbrechen
+          </button>
+        </div>
+      </div>
+    </div>
   )
 }
 
@@ -1651,17 +1991,24 @@ function NoteDetailPage(props: {
   onChangeCategory: (category: NoteCategory) => Promise<void>
   onRebuildNote: () => void
   onReanalyzeCategory: () => void
+  onUpdateTranscript: (transcript: string) => Promise<void>
 }) {
   const note = props.note
   const [categoryDraft, setCategoryDraft] = useState<NoteCategory>(note.category)
   const [transcriptOpen, setTranscriptOpen] = useState(false)
   const [categoryPickerOpen, setCategoryPickerOpen] = useState(false)
+  const [transcriptEditorOpen, setTranscriptEditorOpen] = useState(false)
+  const [transcriptDraft, setTranscriptDraft] = useState(note.rawTranscript)
+  const [transcriptEditorError, setTranscriptEditorError] = useState('')
 
   useEffect(() => {
     setCategoryDraft(note.category)
     setTranscriptOpen(false)
     setCategoryPickerOpen(false)
-  }, [note.category, note.id])
+    setTranscriptEditorOpen(false)
+    setTranscriptDraft(note.rawTranscript)
+    setTranscriptEditorError('')
+  }, [note.category, note.id, note.rawTranscript])
 
   const detailNoteClasses = ['detail-note-surface', categoryThemeClass(note.category)].join(' ')
 
@@ -1688,6 +2035,7 @@ function NoteDetailPage(props: {
 
         {note.rawTranscript ? (
           <article className="detail-transcript-block vstack gap-2">
+            <div className="d-flex align-items-center justify-content-between gap-2">
             <button
               className="detail-transcript-toggle btn btn-sm btn-link p-0 text-start"
               type="button"
@@ -1697,11 +2045,19 @@ function NoteDetailPage(props: {
               <i className={`bi ${transcriptOpen ? 'bi-chevron-down' : 'bi-chevron-right'} me-1`} aria-hidden="true" />
               Transkript
             </button>
+            <button className="btn btn-sm btn-outline-light detail-transcript-edit-btn" type="button" onClick={() => setTranscriptEditorOpen(true)}>
+              <i className="bi bi-pencil-square me-1" aria-hidden="true" />
+              Edit
+            </button>
+            </div>
             {transcriptOpen ? <div className="detail-transcript-body">{note.rawTranscript}</div> : null}
           </article>
         ) : null}
 
         <div className="detail-actions vstack gap-2 mt-auto">
+          <button className="btn btn-light detail-action-btn" onClick={() => setTranscriptEditorOpen(true)} type="button" disabled={!note.rawTranscript.trim()}>
+            Transkript bearbeiten
+          </button>
           <button className="btn btn-light detail-action-btn" onClick={() => setCategoryPickerOpen(true)} type="button">
             Kategorie ändern
           </button>
@@ -1728,7 +2084,76 @@ function NoteDetailPage(props: {
           }}
         />
       ) : null}
+
+      {transcriptEditorOpen ? (
+        <TranscriptEditorModal
+          transcriptDraft={transcriptDraft}
+          setTranscriptDraft={setTranscriptDraft}
+          error={transcriptEditorError}
+          onClose={() => setTranscriptEditorOpen(false)}
+          onSave={async () => {
+            const clean = transcriptDraft.trim()
+            if (!clean) {
+              setTranscriptEditorError('Bitte einen Transkripttext eingeben.')
+              return
+            }
+            setTranscriptEditorError('')
+            try {
+              await props.onUpdateTranscript(clean)
+              setTranscriptEditorOpen(false)
+            } catch (error) {
+              setTranscriptEditorError(error instanceof Error ? error.message : 'Das Transkript konnte nicht gespeichert werden.')
+            }
+          }}
+        />
+      ) : null}
     </section>
+  )
+}
+
+function TranscriptEditorModal(props: {
+  transcriptDraft: string
+  setTranscriptDraft: Dispatch<SetStateAction<string>>
+  error: string
+  onClose: () => void
+  onSave: () => Promise<void>
+}) {
+  return (
+    <div className="overlay-backdrop overlay-dark" onClick={props.onClose}>
+      <div className="modal-panel transcript-editor-panel" onClick={(event) => event.stopPropagation()}>
+        <div className="d-flex align-items-start justify-content-between gap-3 mb-3">
+          <div>
+            <p className="small text-uppercase text-secondary fw-semibold mb-1">Transkript</p>
+            <h3 className="h4 mb-0">Text korrigieren</h3>
+          </div>
+          <button className="btn btn-outline-secondary btn-sm" onClick={props.onClose} type="button">
+            Schließen
+          </button>
+        </div>
+
+        <p className="text-secondary mb-3">Hier kannst du Transkriptfehler direkt ändern. Danach wird die Zusammenfassung neu berechnet.</p>
+
+        <textarea
+          className="form-control transcript-editor-textarea"
+          rows={14}
+          value={props.transcriptDraft}
+          onChange={(event) => props.setTranscriptDraft(event.target.value)}
+          placeholder="Transkript hier korrigieren …"
+          autoFocus
+        />
+
+        {props.error ? <div className="alert alert-danger mt-3 mb-0 py-2">{props.error}</div> : null}
+
+        <div className="d-flex flex-wrap justify-content-end gap-2 mt-3">
+          <button className="btn btn-primary" onClick={() => void props.onSave()} type="button">
+            Speichern
+          </button>
+          <button className="btn btn-outline-secondary" onClick={props.onClose} type="button">
+            Abbrechen
+          </button>
+        </div>
+      </div>
+    </div>
   )
 }
 

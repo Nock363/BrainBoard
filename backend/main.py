@@ -28,6 +28,7 @@ from backend.config import get_config
 from backend.models import (
     AppendTextRequest,
     BoardGroupItem,
+    BoardGroupDraft,
     BoardGroupsResponse,
     BoardGroupsSaveRequest,
     CreateTextNoteRequest,
@@ -40,6 +41,7 @@ from backend.models import (
     RoutineResponse,
     SettingsResponse,
     UpdateNoteCategoryRequest,
+    UpdateNoteTranscriptRequest,
     UpdateSettingsRequest,
 )
 from backend.storage import BrainSessionStore
@@ -64,6 +66,38 @@ def clean_text_value(value: object) -> str:
     if text.lower() in {"none", "null"}:
         return ""
     return text
+
+
+def clean_note_id_list(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    note_ids: list[str] = []
+    seen_note_ids: set[str] = set()
+    for item in value:
+        note_id = clean_text_value(item)
+        if not note_id or note_id in seen_note_ids:
+            continue
+        seen_note_ids.add(note_id)
+        note_ids.append(note_id)
+    return note_ids
+
+
+def clean_board_group_source(value: object) -> str:
+    source = clean_text_value(value).lower()
+    if source in {"auto", "manual"}:
+        return source
+    return "auto"
+
+
+def normalize_board_group(group: dict[str, object], index: int, default_source: str = "auto") -> dict[str, object]:
+    source = clean_board_group_source(group.get("source", default_source))
+    return {
+        "key": clean_text_value(group.get("key")) or f"group-{index}",
+        "title": clean_text_value(group.get("title")),
+        "description": clean_text_value(group.get("description")),
+        "source": source,
+        "noteIds": clean_note_id_list(group.get("noteIds", [])),
+    }
 
 
 def resolve_note_category(note: dict[str, object]) -> str:
@@ -116,7 +150,7 @@ def note_to_model(note: dict[str, object], media_url_fn) -> NoteNode:
         title=clean_text_value(note.get("title")),
         summaryHeadline=clean_text_value(note.get("summaryHeadline")) or clean_text_value(note.get("title")),
         summary=clean_text_value(note.get("summary")),
-        rawTranscript=clean_text_value(note.get("rawTranscript")),
+        rawTranscript=resolved_note_transcript(note),
         category=resolve_note_category(note),
         audioRelativePath=clean_text_value(note.get("audioRelativePath")),
         entries=entries,
@@ -125,37 +159,71 @@ def note_to_model(note: dict[str, object], media_url_fn) -> NoteNode:
     )
 
 
+def note_transcript_segments(note: dict[str, object]) -> list[str]:
+    manual_transcript = clean_text_value(note.get("manualTranscript"))
+    if manual_transcript:
+        return [manual_transcript]
+    transcripts = [
+        str(entry.get("transcript", "")).strip()
+        for entry in note.get("entries", [])
+        if isinstance(entry, dict) and str(entry.get("transcript", "")).strip()
+    ]
+    if transcripts:
+        return transcripts
+    raw_transcript = clean_text_value(note.get("rawTranscript"))
+    return [raw_transcript] if raw_transcript else []
+
+
+def resolved_note_transcript(note: dict[str, object]) -> str:
+    return "\n".join(note_transcript_segments(note))
+
+
 def build_board_groups_response(group_defs: list[dict[str, object]], notes: list[dict[str, object]]) -> BoardGroupsResponse:
     note_map = {
         str(note.get("id", "")): note
         for note in notes
         if isinstance(note, dict) and str(note.get("id", "")).strip()
     }
+    normalized_groups = [normalize_board_group(group, index) for index, group in enumerate(group_defs) if isinstance(group, dict)]
+    manual_note_ids = {
+        note_id
+        for group in normalized_groups
+        if group["source"] == "manual"
+        for note_id in group["noteIds"]
+    }
     seen_note_ids: set[str] = set()
     response_groups: list[BoardGroupItem] = []
 
-    for index, group in enumerate(group_defs):
-        if not isinstance(group, dict):
-            continue
-        group_title = clean_text_value(group.get("title")) or f"Gruppe {index + 1}"
-        group_description = clean_text_value(group.get("description"))
+    for index, group in enumerate(normalized_groups):
+        group_title = group["title"] or f"Gruppe {index + 1}"
+        group_description = group["description"]
+        group_source = group["source"]
+        group_key = group["key"]
         group_notes: list[NoteNode] = []
-        for note_id in group.get("noteIds", []):
+        if group_key == "group-unassigned" or group_title == "Nicht zugeordnet":
+            continue
+        for note_id in group["noteIds"]:
             clean_note_id = clean_text_value(note_id)
-            if not clean_note_id or clean_note_id in seen_note_ids:
+            if not clean_note_id or clean_note_id in seen_note_ids or clean_note_id in manual_note_ids:
                 continue
             note = note_map.get(clean_note_id)
             if note is None:
                 continue
             seen_note_ids.add(clean_note_id)
             group_notes.append(note_to_model(note, lambda rel: f"/media/{rel}"))
-        if not group_notes:
+        if group_source == "auto" and len(group_notes) < 2:
             continue
+        if group_source == "manual":
+            for note_id in group["noteIds"]:
+                clean_note_id = clean_text_value(note_id)
+                if clean_note_id:
+                    seen_note_ids.add(clean_note_id)
         response_groups.append(
             BoardGroupItem(
-                key=clean_text_value(group.get("key")) or f"group-{index}-{re.sub(r'[^a-z0-9]+', '-', group_title.lower()).strip('-') or 'board'}",
+                key=group_key or f"group-{index}-{re.sub(r'[^a-z0-9]+', '-', group_title.lower()).strip('-') or 'board'}",
                 title=group_title,
                 description=group_description,
+                source=group_source, 
                 notes=group_notes,
             )
         )
@@ -167,6 +235,7 @@ def build_board_groups_response(group_defs: list[dict[str, object]], notes: list
                 key="group-unassigned",
                 title="Nicht zugeordnet",
                 description="Notizen ohne eindeutige thematische Gruppe.",
+                source="auto",
                 notes=[note_to_model(note, lambda rel: f"/media/{rel}") for note in unassigned_notes],
             )
         )
@@ -177,6 +246,7 @@ def build_board_groups_response(group_defs: list[dict[str, object]], notes: list
                 key="group-empty",
                 title="Nicht zugeordnet",
                 description="Keine gespeicherten Gruppen vorhanden.",
+                source="auto",
                 notes=[note_to_model(note, lambda rel: f"/media/{rel}") for note in notes],
             )
         )
@@ -265,7 +335,7 @@ def reanalyze_note(
     summary_prompt_prefix: str,
     category_prompt_prefix: str,
 ) -> dict[str, object]:
-    transcripts = [str(item.get("transcript", "")).strip() for item in note.get("entries", []) if isinstance(item, dict) and str(item.get("transcript", "")).strip()]
+    transcripts = note_transcript_segments(note)
     if not transcripts:
         raise ValueError("Keine Eintraege fuer diese Notiz vorhanden")
     note = recompute_summary(
@@ -286,8 +356,7 @@ def recompute_summary(
     summary_prompt_prefix: str,
     category_prompt_prefix: str,
 ) -> dict[str, object]:
-    entries = [str(entry.get("transcript", "")).strip() for entry in note.get("entries", []) if isinstance(entry, dict)]
-    entries = [item for item in entries if item]
+    entries = note_transcript_segments(note)
     if not entries:
         return note
     summary_result = summarize_note_timeline(
@@ -301,7 +370,9 @@ def recompute_summary(
     note["summary"] = clean_text_value(summary_result.get("summary")) or clean_text_value(note.get("summary"))
     note["title"] = summary_headline
     note["summaryHeadline"] = summary_headline
-    note["category"] = classify_note_category(api_key, summary_model, category_prompt_prefix, note["summary"])
+    next_category = classify_note_category(api_key, summary_model, category_prompt_prefix, note["summary"])
+    if next_category:
+        note["category"] = next_category
     note["rawTranscript"] = "\n".join(entries)
     return note
 
@@ -408,10 +479,15 @@ def save_board_groups(payload: BoardGroupsSaveRequest) -> BoardGroupsResponse:
             "key": group.key,
             "title": group.title,
             "description": group.description,
+            "source": group.source,
             "noteIds": group.noteIds,
         }
         for group in payload.groups
-        if clean_text_value(group.title) and len([note_id for note_id in group.noteIds if clean_text_value(note_id)]) >= 1
+        if clean_text_value(group.title)
+        and (
+            clean_board_group_source(group.source) == "manual"
+            or len([note_id for note_id in group.noteIds if clean_text_value(note_id)]) >= 2
+        )
     ]
     store.save_board_groups(groups)
     return build_board_groups_response(groups, store.list_notes())
@@ -424,14 +500,33 @@ def group_notes() -> BoardGroupsResponse:
     summary_model = str(current_settings.get("summaryModel") or config.summary_model)
     group_prompt_prefix = group_prompt_prefix_from(current_settings)
     notes = store.list_notes()
+    stored_groups = store.load_board_groups()
+    manual_groups = [
+        normalize_board_group(group, index, default_source="auto")
+        for index, group in enumerate(stored_groups)
+        if isinstance(group, dict) and clean_board_group_source(group.get("source", "auto")) == "manual"
+    ]
+    manual_note_ids = {
+        note_id
+        for group in manual_groups
+        for note_id in group["noteIds"]
+    }
     grouped_notes = group_notes_by_theme(
         api_key=api_key,
         model=summary_model,
         prompt_prefix=group_prompt_prefix,
-        notes=notes,
+        notes=[note for note in notes if str(note.get("id", "")) not in manual_note_ids],
     )
-    store.save_board_groups(grouped_notes)
-    return build_board_groups_response(grouped_notes, notes)
+    auto_groups = [
+        {
+            **group,
+            "source": "auto",
+        }
+        for group in grouped_notes
+    ]
+    combined_groups = [*manual_groups, *auto_groups]
+    store.save_board_groups(combined_groups)
+    return build_board_groups_response(combined_groups, notes)
 
 
 @app.get("/api/llm-logs", response_model=LlmLogsResponse)
@@ -523,6 +618,7 @@ async def create_voice_note(
         entry["transcript"] = transcript
         entry["transcriptionState"] = "done"
         entry["updatedAt"] = utc_now()
+        note.pop("manualTranscript", None)
         if new_note:
             note_result = build_note_from_text(
                 transcript,
@@ -594,6 +690,7 @@ def append_text_to_note(note_id: str, payload: AppendTextRequest) -> NoteRespons
     note["entries"] = list(note.get("entries", [])) + [entry]
     transcripts = [str(item.get("transcript", "")).strip() for item in note["entries"] if isinstance(item, dict) and str(item.get("transcript", "")).strip()]
     note["rawTranscript"] = "\n".join(transcripts)
+    note.pop("manualTranscript", None)
     note["updatedAt"] = now
     if api_key:
         try:
@@ -673,6 +770,30 @@ def update_note_category(note_id: str, payload: UpdateNoteCategoryRequest) -> No
     return NoteResponse(note=note_to_model(note, lambda rel: f"/media/{rel}"))
 
 
+@app.put("/api/notes/{note_id}/transcript", response_model=NoteResponse)
+def update_note_transcript(note_id: str, payload: UpdateNoteTranscriptRequest) -> NoteResponse:
+    current_settings = {**default_settings(config), **store.load_settings()}
+    api_key = str(current_settings.get("openAiApiKey") or "")
+    summary_model = str(current_settings.get("summaryModel") or config.summary_model)
+    note = store.get_note(note_id)
+    if note is None:
+        raise HTTPException(status_code=404, detail="Note nicht gefunden")
+
+    transcript = payload.transcript.strip()
+    note["manualTranscript"] = transcript
+    note["rawTranscript"] = transcript
+    note = recompute_summary(
+        note,
+        api_key=api_key,
+        summary_model=summary_model,
+        summary_prompt_prefix=summary_prompt_prefix_from(current_settings),
+        category_prompt_prefix=category_prompt_prefix_from(current_settings),
+    )
+    note["updatedAt"] = utc_now()
+    store.save_note(note)
+    return NoteResponse(note=note_to_model(note, lambda rel: f"/media/{rel}"))
+
+
 @app.post("/api/routines/reanalyze-notes", response_model=RoutineResponse)
 def reanalyze_all_notes() -> RoutineResponse:
     current_settings = {**default_settings(config), **store.load_settings()}
@@ -681,7 +802,7 @@ def reanalyze_all_notes() -> RoutineResponse:
     updated_notes = 0
     skipped_notes = 0
     for note in store.list_notes():
-        transcripts = [str(item.get("transcript", "")).strip() for item in note.get("entries", []) if isinstance(item, dict) and str(item.get("transcript", "")).strip()]
+        transcripts = note_transcript_segments(note)
         if not transcripts:
             skipped_notes += 1
             continue
@@ -731,6 +852,7 @@ def retry_transcription(note_id: str, entry_id: str) -> NoteResponse:
     entry["transcriptionState"] = "done"
     entry["transcriptionError"] = ""
     entry["updatedAt"] = utc_now()
+    note.pop("manualTranscript", None)
     transcripts = [str(item.get("transcript", "")).strip() for item in note.get("entries", []) if isinstance(item, dict) and str(item.get("transcript", "")).strip()]
     note["rawTranscript"] = "\n".join(transcripts)
     note["updatedAt"] = utc_now()

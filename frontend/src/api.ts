@@ -125,6 +125,12 @@ export const api = {
       body: JSON.stringify({ category }),
     })
   },
+  async updateNoteTranscript(noteId: string, transcript: string): Promise<NoteResponse> {
+    return requestJson(`/api/notes/${encodeURIComponent(noteId)}/transcript`, {
+      method: 'PUT',
+      body: JSON.stringify({ transcript }),
+    })
+  },
   async reanalyzeAllNotes(): Promise<RoutineResponse> {
     return requestJson('/api/routines/reanalyze-notes', {
       method: 'POST',
