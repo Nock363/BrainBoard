@@ -545,7 +545,7 @@ def list_llm_logs(limit: int = 100) -> LlmLogsResponse:
     return LlmLogsResponse(logs=store.list_llm_logs(limit))
 
 
-@app.post("/api/inspiration", response_model=InspirationResponse)
+@app.api_route("/api/inspiration", methods=["GET", "POST"], response_model=InspirationResponse)
 def create_inspiration() -> InspirationResponse:
     current_settings = {**default_settings(config), **store.load_settings()}
     api_key = str(current_settings.get("openAiApiKey") or config.openai_api_key or "")
