@@ -6,6 +6,8 @@ import type { BoardGroup, BoardGroupDraft, LlmLogEntry, NoteCategory, NoteNode, 
 type BusyState = { message: string } | null
 
 type InspirationSuggestion = {
+  noteId: string
+  noteTitle: string
   context: string
   question: string
 }
@@ -1499,10 +1501,10 @@ function InspirationView(props: {
     <section className="inspiration-view h-100 d-flex flex-column gap-3">
       <div className="card border-0 shadow-sm inspiration-hero">
         <div className="card-body p-3 p-lg-4 d-flex flex-column gap-2">
-          <span className="badge rounded-pill text-bg-light border text-secondary align-self-start">Gedankenstoß</span>
-          <h2 className="inspiration-title mb-0">Ein kurzer Impuls aus deinen Notizen.</h2>
+          <span className="badge rounded-pill text-bg-light border text-secondary align-self-start">Zufällige Notiz</span>
+          <h2 className="inspiration-title mb-0">Eine konkrete Idee mit sofortiger Folgefrage.</h2>
           <p className="inspiration-copy text-secondary mb-0">
-            Die KI liest die Notizen durch und gibt dir nur einen kleinen Kontext plus eine Frage zum Weiterdenken.
+            Die KI zieht eine einzelne Notiz und stellt genau eine Frage, mit der du die Idee direkt weiterdenken kannst.
           </p>
         </div>
       </div>
@@ -1510,8 +1512,8 @@ function InspirationView(props: {
       <div className="inspiration-panel card border-0 shadow-sm flex-grow-1">
         <div className="card-body p-3 p-lg-4 d-flex flex-column gap-3 h-100">
           <div className="d-flex flex-wrap align-items-center gap-2">
-            <span className="badge rounded-pill text-bg-light border text-secondary">{props.noteCount} Notizen ausgewertet</span>
-            <span className="badge rounded-pill text-bg-light border text-secondary">Sehr kurz, sehr direkt</span>
+            <span className="badge rounded-pill text-bg-light border text-secondary">{props.noteCount} Notizen im Archiv</span>
+            <span className="badge rounded-pill text-bg-light border text-secondary">Eine Notiz pro Klick</span>
           </div>
 
           <button
@@ -1521,7 +1523,7 @@ function InspirationView(props: {
             disabled={props.loading}
           >
             <i className={`bi ${props.loading ? 'bi-hourglass-split' : 'bi-lightbulb-fill'} me-2`} aria-hidden="true" />
-            {props.loading ? 'Inspiration wird gesucht …' : props.suggestion ? 'Neue Inspiration' : 'Inspiration holen'}
+            {props.loading ? 'Notiz wird gezogen …' : props.suggestion ? 'Nächste Notiz' : 'Idee holen'}
           </button>
 
           {props.error ? <div className="alert alert-warning mb-0 py-2">{props.error}</div> : null}
@@ -1529,6 +1531,10 @@ function InspirationView(props: {
           {props.suggestion ? (
             <div className="inspiration-result card border-0 shadow-none mb-0">
               <div className="card-body p-3 p-lg-4 d-flex flex-column gap-3">
+                <div>
+                  <div className="small text-uppercase text-secondary fw-semibold mb-1">Bezug</div>
+                  <p className="inspiration-title-note mb-0">{props.suggestion.noteTitle || 'Unbenannte Notiz'}</p>
+                </div>
                 <div>
                   <div className="small text-uppercase text-secondary fw-semibold mb-1">Kurzkontext</div>
                   <p className="inspiration-context mb-0">{props.suggestion.context}</p>

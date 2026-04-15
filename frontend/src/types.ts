@@ -76,6 +76,8 @@ export interface ReportResponse {
 }
 
 export interface InspirationResponse {
+  noteId: string
+  noteTitle: string
   context: string
   question: string
 }

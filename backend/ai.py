@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import random
 import re
 from datetime import datetime, timezone
 from collections import Counter
@@ -483,10 +484,12 @@ def _build_inspiration_schema() -> dict[str, Any]:
         "type": "object",
         "additionalProperties": False,
         "properties": {
+            "noteId": {"type": "string"},
+            "noteTitle": {"type": "string"},
             "context": {"type": "string"},
             "question": {"type": "string"},
         },
-        "required": ["context", "question"],
+        "required": ["noteId", "noteTitle", "context", "question"],
     }
 
 
@@ -529,6 +532,7 @@ def _compact_inspiration_payload(note: dict[str, Any]) -> dict[str, Any]:
         body = f"{body[:357].rstrip()}..."
     return {
         "id": note_id,
+        "noteId": note_id,
         "type": note_type,
         "title": title,
         "summaryHeadline": summary_headline,
@@ -536,43 +540,71 @@ def _compact_inspiration_payload(note: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def infer_local_inspiration(notes: list[dict[str, Any]]) -> dict[str, str]:
+def _note_inspiration_title(note: dict[str, Any]) -> str:
+    title = _clean_text(str(note.get("title", ""))) or _clean_text(str(note.get("summaryHeadline", "")))
+    return title or "deine Notiz"
+
+
+def _note_inspiration_context(note: dict[str, Any]) -> str:
+    note_type = {
+        "Idea": "Idee",
+        "Task": "To-Do",
+        "": "Notiz",
+    }.get(_normalize_category(note.get("category")), "Notiz")
+    title = _note_inspiration_title(note)
+    summary = _clean_text(str(note.get("summary", "")))
+    if summary:
+        first_clause = summary.split(".")[0].strip()
+        if first_clause:
+            return f"{note_type} · {title}: {first_clause}."
+    return f"{note_type} · {title}."
+
+
+def infer_local_inspiration(note: dict[str, Any] | None, notes: list[dict[str, Any]]) -> dict[str, str]:
     clean_notes = [note for note in notes if _clean_text(str(note.get("id", "")))]
+    if note is None:
+        if not clean_notes:
+            return {
+                "noteId": "",
+                "noteTitle": "",
+                "context": "Noch keine Notizen gespeichert.",
+                "question": "Worüber möchtest du als Nächstes nachdenken?",
+            }
+        note = random.choice(clean_notes)
+
+    note_title = _note_inspiration_title(note)
+    note_type = {
+        "Idea": "Idee",
+        "Task": "To-Do",
+        "": "Notiz",
+    }.get(_normalize_category(note.get("category")), "Notiz")
+    summary = _clean_text(str(note.get("summary", ""))).lower()
+    transcript = _clean_text(str(note.get("rawTranscript", ""))).lower()
+    combined = f"{summary} {transcript} {note_title.lower()}"
+
     if not clean_notes:
         return {
+            "noteId": "",
+            "noteTitle": "",
             "context": "Noch keine Notizen gespeichert.",
             "question": "Worüber möchtest du als Nächstes nachdenken?",
         }
 
-    ordered_notes = sorted(clean_notes, key=lambda note: _clean_text(str(note.get("updatedAt", ""))), reverse=True)
-    combined_text = " ".join(
-        " ".join(
-            part
-            for part in [
-                _clean_text(str(note.get("title", ""))),
-                _clean_text(str(note.get("summaryHeadline", ""))),
-                _clean_text(str(note.get("summary", ""))),
-                _clean_text(str(note.get("rawTranscript", ""))),
-            ]
-            if part
-        )
-        for note in ordered_notes
-    )
-    normalized_text = " ".join(part for part in combined_text.split() if part)
-    tags = infer_tags(normalized_text)
-    note_count = len(ordered_notes)
-
-    if tags:
-        topic = ", ".join(tags[:3])
-        context = f"{note_count} Notizen, oft rund um {topic}."
-        question = f"Welcher Faden verdient heute zehn Minuten?"
+    if "weltraum" in combined or "weltraum" in combined or "raumschiff" in combined or "planet" in combined:
+        question = "Wie soll dein Hauptcharakter aussehen?"
+    elif "app" in combined or "produkt" in combined or "feature" in combined or "user" in combined:
+        question = "Wer ist der Hauptnutzer dieser Idee?"
+    elif "geschichte" in combined or "story" in combined or "roman" in combined:
+        question = "Welche Figur trägt die Geschichte nach vorn?"
+    elif note_type == "To-Do":
+        question = "Was wäre der kleinste nächste Schritt?"
     else:
-        recent_title = _clean_text(str(ordered_notes[0].get("title", ""))) or "deine letzte Notiz"
-        context = f"{note_count} Notizen, zuletzt {recent_title}."
-        question = "Womit willst du heute einen kleinen Schritt weitergehen?"
+        question = "Welche eine Frage macht diese Idee jetzt konkreter?"
 
     return {
-        "context": context,
+        "noteId": str(note.get("id", "")),
+        "noteTitle": note_title,
+        "context": _note_inspiration_context(note),
         "question": question,
     }
 
@@ -853,9 +885,11 @@ def generate_inspiration_suggestion(
     clean_key = api_key.strip()
     payload_notes = [_compact_inspiration_payload(note) for note in notes if _clean_text(str(note.get("id", "")))]
     if not payload_notes:
-        return infer_local_inspiration(notes)
+        return infer_local_inspiration(None, notes)
     if not clean_key:
-        return infer_local_inspiration(notes)
+        return infer_local_inspiration(random.choice(payload_notes), notes)
+
+    selected_note = random.choice(payload_notes)
 
     payload = {
         "model": model.strip() or "gpt-4o-mini",
@@ -863,18 +897,20 @@ def generate_inspiration_suggestion(
             {
                 "role": "system",
                 "content": (
-                    "Du hilfst beim freien Weiterdenken. "
-                    "Analysiere alle BrainSession-Notizen als Ganzes und liefere genau einen sehr kurzen Kontext "
-                    "und genau eine inspirierende Frage. "
-                    "Der Kontext soll maximal zwei kurze Saetze haben, die Frage genau ein kurzer Satz sein. "
-                    "Antworte nur als JSON mit context und question."
+                    "Du hilfst beim freien Weiterdenken an genau EINER BrainSession-Notiz. "
+                    "Lies die Notiz wie einen Wikipedia-Einstieg: konkret, anschlussfähig und direkt weiterführend. "
+                    "Formuliere einen sehr kurzen Kontextsatz und eine einzige, sehr konkrete Folgefrage. "
+                    "Die Frage soll so klingen, als würde man auf der Idee aufbauen und direkt tiefer einsteigen. "
+                    "Wenn es sich um eine Story-Idee handelt, frage z.B. nach Figur, Hauptcharakter, Konflikt oder Welt. "
+                    "Wenn es sich um eine App- oder Produktidee handelt, frage z.B. nach Hauptnutzer, Kernproblem oder erstem Use Case. "
+                    "Antworte nur als JSON mit noteId, noteTitle, context und question."
                 ),
             },
             {
                 "role": "user",
                 "content": (
                     f"Inspiration-Prompt: {DEFAULT_INSPIRATION_PROMPT_PREFIX}\n\n"
-                    f"Notizen als JSON:\n{json.dumps(payload_notes, ensure_ascii=False)}"
+                    f"Zufällig ausgewählte Notiz als JSON:\n{json.dumps(selected_note, ensure_ascii=False)}"
                 ),
             },
         ],
@@ -891,16 +927,18 @@ def generate_inspiration_suggestion(
         response = _openai_responses(clean_key, payload)
         raw = _extract_output_text(response)
         parsed = json.loads(raw)
+        note_id = _clean_text(str(parsed.get("noteId", selected_note["id"])))
+        note_title = _clean_text(str(parsed.get("noteTitle", selected_note["title"])))
         context = _clean_text(str(parsed.get("context", "")))
         question = _clean_text(str(parsed.get("question", "")))
         if not context or not question:
             raise ValueError("Incomplete inspiration payload")
         log_entry["response"] = _format_inspiration_log(context, question)
         _emit_llm_log(log_entry)
-        return {"context": context, "question": question}
+        return {"noteId": note_id, "noteTitle": note_title, "context": context, "question": question}
     except Exception:
         log_entry["error"] = "Konnte keine Inspiration erzeugen; lokaler Fallback verwendet."
-        fallback = infer_local_inspiration(notes)
+        fallback = infer_local_inspiration(selected_note, notes)
         log_entry["response"] = _format_inspiration_log(fallback["context"], fallback["question"])
         _emit_llm_log(log_entry)
         return fallback

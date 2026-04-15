@@ -207,6 +207,13 @@ main {
   color: var(--app-muted);
 }
 
+.inspiration-title-note {
+  color: var(--app-text);
+  font-size: 1.1rem;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
 .inspiration-context,
 .inspiration-question {
   font-size: 1.05rem;

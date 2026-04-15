@@ -100,6 +100,8 @@ class ReportResponse(BaseModel):
 
 
 class InspirationResponse(BaseModel):
+    noteId: str
+    noteTitle: str
     context: str
     question: str
 
