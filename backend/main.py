@@ -15,6 +15,7 @@ from fastapi.staticfiles import StaticFiles
 
 from backend.ai import (
     classify_note_category,
+    generate_inspiration_suggestion,
     group_notes_by_theme,
     interpret_text_note,
     set_llm_logger,
@@ -38,6 +39,7 @@ from backend.models import (
     NotesResponse,
     NoteTimelineEntry,
     LlmLogsResponse,
+    InspirationResponse,
     ReportResponse,
     RoutineResponse,
     SettingsResponse,
@@ -541,6 +543,15 @@ def group_notes() -> BoardGroupsResponse:
 @app.get("/api/llm-logs", response_model=LlmLogsResponse)
 def list_llm_logs(limit: int = 100) -> LlmLogsResponse:
     return LlmLogsResponse(logs=store.list_llm_logs(limit))
+
+
+@app.post("/api/inspiration", response_model=InspirationResponse)
+def create_inspiration() -> InspirationResponse:
+    current_settings = {**default_settings(config), **store.load_settings()}
+    api_key = str(current_settings.get("openAiApiKey") or config.openai_api_key or "")
+    follow_up_model = str(current_settings.get("followUpModel") or config.follow_up_model)
+    suggestion = generate_inspiration_suggestion(api_key, follow_up_model, store.list_notes())
+    return InspirationResponse(**suggestion)
 
 
 @app.get("/api/notes/{note_id}", response_model=NoteResponse)

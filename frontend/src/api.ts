@@ -2,6 +2,7 @@ import type {
   BoardGroupDraft,
   LlmLogsResponse,
   BoardGroupsResponse,
+  InspirationResponse,
   NoteResponse,
   NotesResponse,
   ReportResponse,
@@ -51,6 +52,12 @@ export const api = {
   },
   async loadLlmLogs(limit = 100): Promise<LlmLogsResponse> {
     return requestJson(`/api/llm-logs?limit=${encodeURIComponent(String(limit))}`)
+  },
+  async createInspiration(): Promise<InspirationResponse> {
+    return requestJson('/api/inspiration', {
+      method: 'POST',
+      body: '{}',
+    })
   },
   async saveSettings(payload: {
     openAiApiKey?: string

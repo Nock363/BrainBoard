@@ -40,6 +40,12 @@ DEFAULT_TRANSCRIPTION_PROMPT = (
     "Wenn etwas unklar ist, lasse es lieber weg statt zu raten."
 )
 
+DEFAULT_INSPIRATION_PROMPT_PREFIX = (
+    "Du liest alle BrainSession-Notizen als Gesamtheit und findest daraus einen sehr kurzen Gedankenanstoß "
+    "für eine freie Minute. Antworte auf Deutsch, sehr knapp und konkret. Gib genau einen kurzen Kontext "
+    "und genau eine offene Frage aus."
+)
+
 
 STOP_WORDS = {
     "und",
@@ -187,6 +193,12 @@ def _format_group_log(groups: list[dict[str, Any]]) -> str:
 
 def _format_question_log(question: str) -> str:
     return f"question: {_clean_text(question) or '(leer)'}"
+
+
+def _format_inspiration_log(context: str, question: str) -> str:
+    short_context = _clean_text(context) or "(leer)"
+    short_question = _clean_text(question) or "(leer)"
+    return f"context: {short_context}\nquestion: {short_question}"
 
 
 def _format_transcription_log(text: str) -> str:
@@ -466,6 +478,18 @@ def _build_group_schema() -> dict[str, Any]:
     }
 
 
+def _build_inspiration_schema() -> dict[str, Any]:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "context": {"type": "string"},
+            "question": {"type": "string"},
+        },
+        "required": ["context", "question"],
+    }
+
+
 def _compact_note_group_payload(note: dict[str, Any]) -> dict[str, Any]:
     note_id = _clean_text(str(note.get("id", "")))
     title = _clean_text(str(note.get("title", ""))) or "Neue Notiz"
@@ -486,6 +510,70 @@ def _compact_note_group_payload(note: dict[str, Any]) -> dict[str, Any]:
         "title": title,
         "summaryHeadline": summary_headline,
         "body": body,
+    }
+
+
+def _compact_inspiration_payload(note: dict[str, Any]) -> dict[str, Any]:
+    note_id = _clean_text(str(note.get("id", "")))
+    title = _clean_text(str(note.get("title", ""))) or "Neue Notiz"
+    summary_headline = _clean_text(str(note.get("summaryHeadline", "")))
+    summary = _clean_text(str(note.get("summary", "")))
+    raw_transcript = _clean_text(str(note.get("rawTranscript", "")))
+    note_type = {
+        "Idea": "Idee",
+        "Task": "To-Do",
+        "": "Notiz",
+    }.get(_normalize_category(note.get("category")), "Notiz")
+    body = summary or raw_transcript or summary_headline
+    if len(body) > 360:
+        body = f"{body[:357].rstrip()}..."
+    return {
+        "id": note_id,
+        "type": note_type,
+        "title": title,
+        "summaryHeadline": summary_headline,
+        "body": body,
+    }
+
+
+def infer_local_inspiration(notes: list[dict[str, Any]]) -> dict[str, str]:
+    clean_notes = [note for note in notes if _clean_text(str(note.get("id", "")))]
+    if not clean_notes:
+        return {
+            "context": "Noch keine Notizen gespeichert.",
+            "question": "Worüber möchtest du als Nächstes nachdenken?",
+        }
+
+    ordered_notes = sorted(clean_notes, key=lambda note: _clean_text(str(note.get("updatedAt", ""))), reverse=True)
+    combined_text = " ".join(
+        " ".join(
+            part
+            for part in [
+                _clean_text(str(note.get("title", ""))),
+                _clean_text(str(note.get("summaryHeadline", ""))),
+                _clean_text(str(note.get("summary", ""))),
+                _clean_text(str(note.get("rawTranscript", ""))),
+            ]
+            if part
+        )
+        for note in ordered_notes
+    )
+    normalized_text = " ".join(part for part in combined_text.split() if part)
+    tags = infer_tags(normalized_text)
+    note_count = len(ordered_notes)
+
+    if tags:
+        topic = ", ".join(tags[:3])
+        context = f"{note_count} Notizen, oft rund um {topic}."
+        question = f"Welcher Faden verdient heute zehn Minuten?"
+    else:
+        recent_title = _clean_text(str(ordered_notes[0].get("title", ""))) or "deine letzte Notiz"
+        context = f"{note_count} Notizen, zuletzt {recent_title}."
+        question = "Womit willst du heute einen kleinen Schritt weitergehen?"
+
+    return {
+        "context": context,
+        "question": question,
     }
 
 
@@ -755,6 +843,67 @@ def generate_follow_up_question(
         log_entry["error"] = "Konnte keine Folgefrage erzeugen."
         _emit_llm_log(log_entry)
         return ""
+
+
+def generate_inspiration_suggestion(
+    api_key: str,
+    model: str,
+    notes: list[dict[str, Any]],
+) -> dict[str, str]:
+    clean_key = api_key.strip()
+    payload_notes = [_compact_inspiration_payload(note) for note in notes if _clean_text(str(note.get("id", "")))]
+    if not payload_notes:
+        return infer_local_inspiration(notes)
+    if not clean_key:
+        return infer_local_inspiration(notes)
+
+    payload = {
+        "model": model.strip() or "gpt-4o-mini",
+        "input": [
+            {
+                "role": "system",
+                "content": (
+                    "Du hilfst beim freien Weiterdenken. "
+                    "Analysiere alle BrainSession-Notizen als Ganzes und liefere genau einen sehr kurzen Kontext "
+                    "und genau eine inspirierende Frage. "
+                    "Der Kontext soll maximal zwei kurze Saetze haben, die Frage genau ein kurzer Satz sein. "
+                    "Antworte nur als JSON mit context und question."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"Inspiration-Prompt: {DEFAULT_INSPIRATION_PROMPT_PREFIX}\n\n"
+                    f"Notizen als JSON:\n{json.dumps(payload_notes, ensure_ascii=False)}"
+                ),
+            },
+        ],
+        "text": {
+            "format": {
+                "type": "json_schema",
+                "name": "inspiration_suggestion",
+                "schema": _build_inspiration_schema(),
+            }
+        },
+    }
+    log_entry = _make_llm_log_entry("Inspiration", payload["model"], _normalize_messages(payload["input"]))
+    try:
+        response = _openai_responses(clean_key, payload)
+        raw = _extract_output_text(response)
+        parsed = json.loads(raw)
+        context = _clean_text(str(parsed.get("context", "")))
+        question = _clean_text(str(parsed.get("question", "")))
+        if not context or not question:
+            raise ValueError("Incomplete inspiration payload")
+        log_entry["response"] = _format_inspiration_log(context, question)
+        _emit_llm_log(log_entry)
+        return {"context": context, "question": question}
+    except Exception:
+        log_entry["error"] = "Konnte keine Inspiration erzeugen; lokaler Fallback verwendet."
+        fallback = infer_local_inspiration(notes)
+        log_entry["response"] = _format_inspiration_log(fallback["context"], fallback["question"])
+        _emit_llm_log(log_entry)
+        return fallback
 
 
 def transcribe_audio(

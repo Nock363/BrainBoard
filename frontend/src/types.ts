@@ -1,4 +1,4 @@
-export type TabKey = 'capture' | 'inbox' | 'board'
+export type TabKey = 'capture' | 'inbox' | 'inspiration' | 'board'
 
 export type NoteCategory = '' | 'Idea' | 'Task'
 
@@ -73,6 +73,11 @@ export interface ReportResponse {
   ok: boolean
   reportMarkdown: string
   fileName: string
+}
+
+export interface InspirationResponse {
+  context: string
+  question: string
 }
 
 export interface LlmLogMessage {

@@ -99,6 +99,11 @@ class ReportResponse(BaseModel):
     fileName: str
 
 
+class InspirationResponse(BaseModel):
+    context: str
+    question: str
+
+
 class BoardGroupItem(BaseModel):
     key: str
     title: str

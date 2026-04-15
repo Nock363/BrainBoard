@@ -5,6 +5,11 @@ import type { BoardGroup, BoardGroupDraft, LlmLogEntry, NoteCategory, NoteNode, 
 
 type BusyState = { message: string } | null
 
+type InspirationSuggestion = {
+  context: string
+  question: string
+}
+
 type AppHistoryState = {
   tab: TabKey
   selectedNoteId: string
@@ -99,6 +104,7 @@ const GROUP_STOP_WORDS = new Set([
 const tabs: Array<{ key: TabKey; label: string; icon: string }> = [
   { key: 'capture', label: 'Start', icon: 'bi-stars' },
   { key: 'inbox', label: 'Eingang', icon: 'bi-inbox-fill' },
+  { key: 'inspiration', label: 'Ideen', icon: 'bi-lightbulb-fill' },
   { key: 'board', label: 'Board', icon: 'bi-kanban-fill' },
 ]
 
@@ -440,6 +446,9 @@ export default function App() {
   const [busy, setBusy] = useState<BusyState>(null)
   const [error, setError] = useState('')
   const [playingId, setPlayingId] = useState('')
+  const [inspirationSuggestion, setInspirationSuggestion] = useState<InspirationSuggestion | null>(null)
+  const [inspirationLoading, setInspirationLoading] = useState(false)
+  const [inspirationError, setInspirationError] = useState('')
   const [deleteNoteTarget, setDeleteNoteTarget] = useState<NoteNode | null>(null)
   const [deleteAllOpen, setDeleteAllOpen] = useState(false)
   const [boardGroups, setBoardGroups] = useState<BoardGroup[]>([])
@@ -485,7 +494,10 @@ export default function App() {
       return false
     }
     const candidate = value as Partial<AppHistoryState>
-    return (candidate.tab === 'capture' || candidate.tab === 'inbox' || candidate.tab === 'board') && typeof candidate.selectedNoteId === 'string'
+    return (
+      (candidate.tab === 'capture' || candidate.tab === 'inbox' || candidate.tab === 'inspiration' || candidate.tab === 'board') &&
+      typeof candidate.selectedNoteId === 'string'
+    )
   }
 
   const pushAppState = (tab: TabKey, selected: string) => {
@@ -658,6 +670,19 @@ export default function App() {
       setLlmLogsError(loadError instanceof Error ? loadError.message : 'Das Protokoll konnte nicht geladen werden.')
     } finally {
       setLlmLogsLoading(false)
+    }
+  }
+
+  const loadInspirationSuggestion = async () => {
+    setInspirationLoading(true)
+    setInspirationError('')
+    try {
+      const response = await runBusy('Inspiration wird gesucht …', async () => api.createInspiration())
+      setInspirationSuggestion(response)
+    } catch (inspirationLoadError) {
+      setInspirationError(inspirationLoadError instanceof Error ? inspirationLoadError.message : 'Die Inspiration konnte nicht geladen werden.')
+    } finally {
+      setInspirationLoading(false)
     }
   }
 
@@ -1260,15 +1285,25 @@ export default function App() {
               </section>
 
               <section className="page-panel h-100 d-flex flex-column gap-3">
-              <InboxView
-                notes={notes}
-                expandedNoteId={expandedInboxNoteId}
-                onToggleExpandNote={toggleInboxNoteExpansion}
-                onOpenNoteDetail={openExpandedInboxNoteDetail}
-                onTogglePlayback={(id, url) => void playAudio(id, url)}
-                currentlyPlayingId={playingId}
-              />
-            </section>
+                <InboxView
+                  notes={notes}
+                  expandedNoteId={expandedInboxNoteId}
+                  onToggleExpandNote={toggleInboxNoteExpansion}
+                  onOpenNoteDetail={openExpandedInboxNoteDetail}
+                  onTogglePlayback={(id, url) => void playAudio(id, url)}
+                  currentlyPlayingId={playingId}
+                />
+              </section>
+
+              <section className="page-panel h-100 d-flex flex-column gap-3">
+                <InspirationView
+                  noteCount={noteCount}
+                  suggestion={inspirationSuggestion}
+                  loading={inspirationLoading}
+                  error={inspirationError}
+                  onGenerate={() => void loadInspirationSuggestion()}
+                />
+              </section>
 
               <section className="page-panel h-100 d-flex flex-column gap-3">
               <BoardView
@@ -1447,6 +1482,68 @@ function SparkView(props: {
               Board öffnen
             </button>
           </div>
+        </div>
+      </div>
+    </section>
+  )
+}
+
+function InspirationView(props: {
+  noteCount: number
+  suggestion: InspirationSuggestion | null
+  loading: boolean
+  error: string
+  onGenerate: () => void
+}) {
+  return (
+    <section className="inspiration-view h-100 d-flex flex-column gap-3">
+      <div className="card border-0 shadow-sm inspiration-hero">
+        <div className="card-body p-3 p-lg-4 d-flex flex-column gap-2">
+          <span className="badge rounded-pill text-bg-light border text-secondary align-self-start">Gedankenstoß</span>
+          <h2 className="inspiration-title mb-0">Ein kurzer Impuls aus deinen Notizen.</h2>
+          <p className="inspiration-copy text-secondary mb-0">
+            Die KI liest die Notizen durch und gibt dir nur einen kleinen Kontext plus eine Frage zum Weiterdenken.
+          </p>
+        </div>
+      </div>
+
+      <div className="inspiration-panel card border-0 shadow-sm flex-grow-1">
+        <div className="card-body p-3 p-lg-4 d-flex flex-column gap-3 h-100">
+          <div className="d-flex flex-wrap align-items-center gap-2">
+            <span className="badge rounded-pill text-bg-light border text-secondary">{props.noteCount} Notizen ausgewertet</span>
+            <span className="badge rounded-pill text-bg-light border text-secondary">Sehr kurz, sehr direkt</span>
+          </div>
+
+          <button
+            className="btn btn-primary align-self-start rounded-pill px-4"
+            type="button"
+            onClick={props.onGenerate}
+            disabled={props.loading}
+          >
+            <i className={`bi ${props.loading ? 'bi-hourglass-split' : 'bi-lightbulb-fill'} me-2`} aria-hidden="true" />
+            {props.loading ? 'Inspiration wird gesucht …' : props.suggestion ? 'Neue Inspiration' : 'Inspiration holen'}
+          </button>
+
+          {props.error ? <div className="alert alert-warning mb-0 py-2">{props.error}</div> : null}
+
+          {props.suggestion ? (
+            <div className="inspiration-result card border-0 shadow-none mb-0">
+              <div className="card-body p-3 p-lg-4 d-flex flex-column gap-3">
+                <div>
+                  <div className="small text-uppercase text-secondary fw-semibold mb-1">Kurzkontext</div>
+                  <p className="inspiration-context mb-0">{props.suggestion.context}</p>
+                </div>
+                <div>
+                  <div className="small text-uppercase text-secondary fw-semibold mb-1">Frage</div>
+                  <p className="inspiration-question mb-0">{props.suggestion.question}</p>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="inspiration-empty text-secondary rounded-4 border border-dashed p-4 flex-grow-1 d-flex align-items-center justify-content-center text-center">
+              Drück auf den Button und hol dir in Sekunden einen Gedanken für die nächste freie Minute.
+            </div>
+          )}
         </div>
       </div>
     </section>

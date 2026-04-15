@@ -162,6 +162,7 @@ main {
 
 .spark-view,
 .inbox-view,
+.inspiration-view,
 .board-view {
   min-height: 0;
 }
@@ -185,6 +186,47 @@ main {
 
 .spark-stage {
   background: #fffdf7;
+}
+
+.inspiration-hero,
+.inspiration-panel,
+.inspiration-result {
+  background: #fffdf7;
+}
+
+.inspiration-title {
+  letter-spacing: -0.03em;
+  font-size: clamp(1.6rem, 3.3vw, 2.5rem);
+  line-height: 1.06;
+  max-width: 14ch;
+}
+
+.inspiration-copy,
+.inspiration-context,
+.inspiration-question {
+  color: var(--app-muted);
+}
+
+.inspiration-context,
+.inspiration-question {
+  font-size: 1.05rem;
+  line-height: 1.55;
+  margin-bottom: 0;
+}
+
+.inspiration-question {
+  color: var(--app-text);
+  font-weight: 700;
+}
+
+.inspiration-empty {
+  min-height: 12rem;
+  border-style: dashed !important;
+  background: rgba(255, 255, 255, 0.5);
+}
+
+.border-dashed {
+  border-style: dashed !important;
 }
 
 .voice-cta {
