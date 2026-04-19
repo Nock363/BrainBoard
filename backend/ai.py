@@ -281,16 +281,9 @@ def infer_local_summary(text: str) -> dict[str, Any]:
     }
 
 
-def _shorten_headline(text: str, max_words: int = 5, max_length: int = 42) -> str:
+def _shorten_headline(text: str) -> str:
     clean = _clean_text(text)
-    if not clean:
-        return "Neue Notiz"
-
-    words = clean.split()
-    headline = " ".join(words[:max_words]).strip().rstrip(".,;:")
-    if len(headline) > max_length:
-        headline = headline[:max_length].rsplit(" ", 1)[0].strip().rstrip(".,;:") or headline[:max_length].strip().rstrip(".,;:")
-    return headline or "Neue Notiz"
+    return clean or "Neue Notiz"
 
 
 def _extract_summary_payload(raw_text: str, fallback_text: str) -> dict[str, str]:
