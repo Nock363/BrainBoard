@@ -4,6 +4,8 @@ import json
 import mimetypes
 import os
 import re
+import shutil
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
@@ -478,6 +480,22 @@ def normalize_note_categories() -> None:
 
 
 normalize_note_categories()
+
+
+def ensure_frontend_built() -> None:
+    index_file = config.frontend_dist_dir / "index.html"
+    if index_file.exists():
+        return
+
+    npm_binary = shutil.which("npm")
+    if npm_binary is None:
+        return
+
+    frontend_dir = config.base_dir / "frontend"
+    subprocess.run([npm_binary, "run", "build"], cwd=frontend_dir, check=True)
+
+
+ensure_frontend_built()
 
 app = FastAPI(title="BrainSession PWA", version="0.1.0")
 app.add_middleware(
