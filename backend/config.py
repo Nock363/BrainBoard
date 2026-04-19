@@ -28,6 +28,7 @@ class AppConfig:
     transcription_model: str
     summary_model: str
     follow_up_model: str
+    chat_model: str
     language: str
     port: int
 
@@ -48,6 +49,7 @@ def get_config() -> AppConfig:
         transcription_model=os.getenv("BRAINSESSION_TRANSCRIPTION_MODEL", "gpt-4o-transcribe").strip() or "gpt-4o-transcribe",
         summary_model=os.getenv("BRAINSESSION_SUMMARY_MODEL", "gpt-4o-mini").strip() or "gpt-4o-mini",
         follow_up_model=os.getenv("BRAINSESSION_FOLLOW_UP_MODEL", "gpt-4o-mini").strip() or "gpt-4o-mini",
+        chat_model=os.getenv("BRAINSESSION_CHAT_MODEL", "gpt-5-mini").strip() or "gpt-5-mini",
         language=os.getenv("BRAINSESSION_LANGUAGE", "de").strip() or "de",
         port=int(os.getenv("PORT", "8000")),
     )

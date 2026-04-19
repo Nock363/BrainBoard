@@ -1,7 +1,18 @@
-import { useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react'
+import { useEffect, useMemo, useRef, useState, type Dispatch, type ReactNode, type SetStateAction } from 'react'
 import { api, mediaUrl } from './api'
 import { useVoiceRecorder } from './hooks/useVoiceRecorder'
-import type { BoardGroup, BoardGroupDraft, LlmLogEntry, NoteCategory, NoteNode, SettingsResponse, TabKey } from './types'
+import type {
+  BoardGroup,
+  BoardGroupDraft,
+  ChatAction,
+  ChatMessage as ChatApiMessage,
+  ChatReference,
+  LlmLogEntry,
+  NoteCategory,
+  NoteNode,
+  SettingsResponse,
+  TabKey,
+} from './types'
 
 type BusyState = { message: string } | null
 
@@ -23,11 +34,20 @@ type SettingsDraft = {
   transcriptionModel: string
   summaryModel: string
   followUpModel: string
+  chatModel: string
   language: string
   transcriptionPrompt: string
   summaryPromptPrefix: string
   categoryPromptPrefix: string
   groupPromptPrefix: string
+}
+
+type ChatThreadMessage = ChatApiMessage & {
+  id: string
+  createdAt: string
+  actions?: ChatAction[]
+  references?: ChatReference[]
+  pending?: boolean
 }
 
 type GroupToken = {
@@ -105,6 +125,7 @@ const GROUP_STOP_WORDS = new Set([
 
 const tabs: Array<{ key: TabKey; label: string; icon: string }> = [
   { key: 'capture', label: 'Start', icon: 'bi-stars' },
+  { key: 'chat', label: 'Chat', icon: 'bi-chat-dots-fill' },
   { key: 'inbox', label: 'Eingang', icon: 'bi-inbox-fill' },
   { key: 'inspiration', label: 'Ideen', icon: 'bi-lightbulb-fill' },
   { key: 'board', label: 'Board', icon: 'bi-kanban-fill' },
@@ -366,6 +387,184 @@ function safeText(value: unknown): string {
   return typeof value === 'string' ? value : ''
 }
 
+function splitInlineOrderedList(content: string): { lead: string; items: string[] } | null {
+  const normalized = content.replace(/\s+/g, ' ').trim()
+  const markers = [...normalized.matchAll(/(?:^|\s)(\d+)\.\s+/g)]
+  if (markers.length < 2) {
+    return null
+  }
+
+  const firstMarker = markers[0]
+  if (firstMarker.index === undefined) {
+    return null
+  }
+
+  const lead = normalized.slice(0, firstMarker.index).replace(/[:\s]+$/, '').trim()
+  const items: string[] = []
+
+  for (let index = 0; index < markers.length; index += 1) {
+    const marker = markers[index]
+    if (marker.index === undefined) {
+      continue
+    }
+    const start = marker.index + marker[0].length
+    const end = markers[index + 1]?.index ?? normalized.length
+    const item = normalized.slice(start, end).trim().replace(/\s+$/, '')
+    if (item) {
+      items.push(item)
+    }
+  }
+
+  if (items.length < 2) {
+    return null
+  }
+
+  return { lead, items }
+}
+
+function splitInlineBulletList(content: string): { lead: string; items: string[] } | null {
+  const normalized = content.replace(/\s+/g, ' ').trim()
+  const parts = normalized.split(/\s-\s+/)
+  if (parts.length < 3) {
+    return null
+  }
+
+  const lead = parts[0].replace(/[:\s]+$/, '').trim()
+  const items = parts
+    .slice(1)
+    .map((item) => item.replace(/[.\s]+$/, '').trim())
+    .filter(Boolean)
+
+  if (items.length < 2) {
+    return null
+  }
+
+  return { lead, items }
+}
+
+function renderChatMessageBlocks(text: string) {
+  const lines = text.replace(/\r/g, '').split('\n')
+  const blocks: ReactNode[] = []
+  let paragraphParts: string[] = []
+  let listKind: 'ul' | 'ol' | null = null
+  let listItems: string[] = []
+
+  const flushParagraph = () => {
+    if (!paragraphParts.length) {
+      return
+    }
+    const content = paragraphParts.join(' ').trim()
+    const inlineOrderedList = splitInlineOrderedList(content)
+    if (inlineOrderedList) {
+      if (inlineOrderedList.lead) {
+        blocks.push(
+          <p key={`paragraph-${blocks.length}`} className="chat-paragraph mb-2">
+            {inlineOrderedList.lead}
+          </p>,
+        )
+      }
+      blocks.push(
+        <ol key={`list-${blocks.length}`} className="chat-list mb-2">
+          {inlineOrderedList.items.map((item, index) => (
+            <li key={`item-${blocks.length}-${index}`} className="chat-list-item">
+              {item}
+            </li>
+          ))}
+        </ol>,
+      )
+      paragraphParts = []
+      return
+    }
+    const inlineBulletList = splitInlineBulletList(content)
+    if (inlineBulletList) {
+      if (inlineBulletList.lead) {
+        blocks.push(
+          <p key={`paragraph-${blocks.length}`} className="chat-paragraph mb-2">
+            {inlineBulletList.lead}
+          </p>,
+        )
+      }
+      blocks.push(
+        <ul key={`list-${blocks.length}`} className="chat-list mb-2">
+          {inlineBulletList.items.map((item, index) => (
+            <li key={`item-${blocks.length}-${index}`} className="chat-list-item">
+              {item}
+            </li>
+          ))}
+        </ul>,
+      )
+      paragraphParts = []
+      return
+    }
+    if (content) {
+      blocks.push(
+        <p key={`paragraph-${blocks.length}`} className="chat-paragraph mb-2">
+          {content}
+        </p>,
+      )
+    }
+    paragraphParts = []
+  }
+
+  const flushList = () => {
+    if (!listKind || !listItems.length) {
+      listKind = null
+      listItems = []
+      return
+    }
+    const ListTag = listKind
+    blocks.push(
+      <ListTag key={`list-${blocks.length}`} className="chat-list mb-2">
+        {listItems.map((item, index) => (
+          <li key={`item-${blocks.length}-${index}`} className="chat-list-item">
+            {item}
+          </li>
+        ))}
+      </ListTag>,
+    )
+    listKind = null
+    listItems = []
+  }
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim()
+    if (!line) {
+      flushParagraph()
+      flushList()
+      continue
+    }
+
+    const unorderedMatch = line.match(/^[-•*]\s+(.*)$/)
+    const orderedMatch = line.match(/^(\d+)[.)]\s+(.*)$/)
+    if (unorderedMatch || orderedMatch) {
+      flushParagraph()
+      const nextListKind: 'ul' | 'ol' = unorderedMatch ? 'ul' : 'ol'
+      if (listKind && listKind !== nextListKind) {
+        flushList()
+      }
+      listKind = nextListKind
+      listItems.push((unorderedMatch ?? orderedMatch)?.[1] ?? '')
+      continue
+    }
+
+    flushList()
+    paragraphParts.push(line)
+  }
+
+  flushParagraph()
+  flushList()
+
+  if (blocks.length === 0) {
+    return [
+      <p key="paragraph-empty" className="chat-paragraph mb-0">
+        {text}
+      </p>,
+    ]
+  }
+
+  return blocks
+}
+
 function downloadMarkdown(fileName: string, markdown: string) {
   const blob = new Blob([markdown], { type: 'text/markdown;charset=utf-8' })
   const link = document.createElement('a')
@@ -437,12 +636,62 @@ function isProcessingNote(note: NoteNode): boolean {
   return entries.some((entry) => entry.transcriptionState === 'processing')
 }
 
+const CHAT_STORAGE_KEY = 'brainsession.chat.thread.v1'
+
+function makeChatMessageId(): string {
+  return `chat_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
+}
+
+function createChatGreeting(): ChatThreadMessage {
+  return {
+    id: makeChatMessageId(),
+    role: 'assistant',
+    content: 'Frag mich nach deinen Notizen, lass mich Ideen verdichten oder bitte mich, direkt neue Notizen oder Gruppen anzulegen.',
+    createdAt: new Date().toISOString(),
+    actions: [],
+  }
+}
+
+function loadStoredChatMessages(): ChatThreadMessage[] {
+  if (typeof window === 'undefined') {
+    return [createChatGreeting()]
+  }
+  try {
+    const raw = window.localStorage.getItem(CHAT_STORAGE_KEY)
+    if (!raw) {
+      return [createChatGreeting()]
+    }
+    const parsed = JSON.parse(raw)
+    if (!Array.isArray(parsed)) {
+      return [createChatGreeting()]
+    }
+    const messages: ChatThreadMessage[] = parsed
+      .map((message): ChatThreadMessage => ({
+        id: typeof message?.id === 'string' ? message.id : makeChatMessageId(),
+        role: message?.role === 'assistant' ? 'assistant' : ('user' as const),
+        content: typeof message?.content === 'string' ? message.content : '',
+        createdAt: typeof message?.createdAt === 'string' ? message.createdAt : new Date().toISOString(),
+        actions: Array.isArray(message?.actions) ? message.actions : [],
+        references: Array.isArray(message?.references) ? message.references : [],
+      }))
+      .filter((message) => message.content.trim())
+    return messages.length > 0 ? messages : [createChatGreeting()]
+  } catch {
+    return [createChatGreeting()]
+  }
+}
+
 export default function App() {
   const [activeTab, setActiveTab] = useState<TabKey>('capture')
   const [notes, setNotes] = useState<NoteNode[]>([])
   const [settings, setSettings] = useState<SettingsResponse | null>(null)
   const [selectedNoteId, setSelectedNoteId] = useState('')
   const [expandedInboxNoteId, setExpandedInboxNoteId] = useState('')
+  const [chatMessages, setChatMessages] = useState<ChatThreadMessage[]>(() => loadStoredChatMessages())
+  const [chatDraft, setChatDraft] = useState('')
+  const [chatLoading, setChatLoading] = useState(false)
+  const [chatError, setChatError] = useState('')
+  const [desktopSidebarMode, setDesktopSidebarMode] = useState<'chat' | 'capture'>('chat')
   const [noteDraft, setNoteDraft] = useState('')
   const [textNoteOpen, setTextNoteOpen] = useState(false)
   const [busy, setBusy] = useState<BusyState>(null)
@@ -473,6 +722,7 @@ export default function App() {
     transcriptionModel: '',
     summaryModel: '',
     followUpModel: '',
+    chatModel: '',
     language: '',
     transcriptionPrompt: '',
     summaryPromptPrefix: '',
@@ -497,7 +747,7 @@ export default function App() {
     }
     const candidate = value as Partial<AppHistoryState>
     return (
-      (candidate.tab === 'capture' || candidate.tab === 'inbox' || candidate.tab === 'inspiration' || candidate.tab === 'board') &&
+      (candidate.tab === 'capture' || candidate.tab === 'chat' || candidate.tab === 'inbox' || candidate.tab === 'inspiration' || candidate.tab === 'board') &&
       typeof candidate.selectedNoteId === 'string'
     )
   }
@@ -652,6 +902,7 @@ export default function App() {
       transcriptionModel: response.transcriptionModel,
       summaryModel: response.summaryModel,
       followUpModel: response.followUpModel,
+      chatModel: response.chatModel,
       language: response.language,
       transcriptionPrompt: response.transcriptionPrompt,
       summaryPromptPrefix: response.summaryPromptPrefix,
@@ -704,6 +955,25 @@ export default function App() {
     }
     void loadLlmLogs()
   }, [settingsOpen])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return
+    }
+    window.localStorage.setItem(
+      CHAT_STORAGE_KEY,
+      JSON.stringify(
+        chatMessages.map((message) => ({
+          id: message.id,
+          role: message.role,
+          content: message.content,
+          createdAt: message.createdAt,
+          actions: message.actions ?? [],
+          references: message.references ?? [],
+        })),
+      ),
+    )
+  }, [chatMessages])
 
   useEffect(() => {
     const currentState = isAppHistoryState(window.history.state) ? window.history.state : null
@@ -855,6 +1125,52 @@ export default function App() {
     openNoteDetail(note.id)
   }
 
+  const sendChatMessage = async () => {
+    const clean = chatDraft.trim()
+    if (!clean || chatLoading || busy) {
+      return
+    }
+
+    const userMessage: ChatThreadMessage = {
+      id: makeChatMessageId(),
+      role: 'user',
+      content: clean,
+      createdAt: new Date().toISOString(),
+    }
+    const nextMessages = [...chatMessages, userMessage]
+    setChatMessages(nextMessages)
+    setChatDraft('')
+    setChatError('')
+    setChatLoading(true)
+
+    try {
+      const response = await runBusy('Chat antwortet …', async () =>
+        api.chat({
+          messages: nextMessages.map((message) => ({
+            role: message.role,
+            content: message.content,
+          })),
+        }),
+      )
+
+      const assistantMessage: ChatThreadMessage = {
+        id: makeChatMessageId(),
+        role: 'assistant',
+        content: response.reply,
+        createdAt: new Date().toISOString(),
+        actions: response.actions,
+        references: response.references,
+      }
+
+      setChatMessages([...nextMessages, assistantMessage])
+      await reloadNotes()
+    } catch (chatSendError) {
+      setChatError(chatSendError instanceof Error ? chatSendError.message : 'Die Chat-Antwort konnte nicht geladen werden.')
+    } finally {
+      setChatLoading(false)
+    }
+  }
+
   const runAllNotesRoutine = async () => {
     const response = await runBusy('Kategorien werden neu erstellt …', async () => api.reanalyzeAllNotes())
     await reloadNotes()
@@ -948,6 +1264,7 @@ export default function App() {
         transcriptionModel: settingsDraft.transcriptionModel.trim() || undefined,
         summaryModel: settingsDraft.summaryModel.trim() || undefined,
         followUpModel: settingsDraft.followUpModel.trim() || undefined,
+        chatModel: settingsDraft.chatModel.trim() || undefined,
         language: settingsDraft.language.trim() || undefined,
         transcriptionPrompt: settingsDraft.transcriptionPrompt,
         summaryPromptPrefix: settingsDraft.summaryPromptPrefix,
@@ -963,6 +1280,7 @@ export default function App() {
       transcriptionModel: response.transcriptionModel,
       summaryModel: response.summaryModel,
       followUpModel: response.followUpModel,
+      chatModel: response.chatModel,
       language: response.language,
       transcriptionPrompt: response.transcriptionPrompt,
       summaryPromptPrefix: response.summaryPromptPrefix,
@@ -1069,6 +1387,26 @@ export default function App() {
                   <i className="bi bi-journal-text me-1" aria-hidden="true" />
                   {noteCount} Notizen
                 </span>
+                <div className="btn-group btn-group-sm desktop-sidebar-switcher" role="tablist" aria-label="Desktop-Karte wählen">
+                  <button
+                    className={`btn btn-outline-primary ${desktopSidebarMode === 'chat' ? 'active' : ''}`}
+                    type="button"
+                    onClick={() => setDesktopSidebarMode('chat')}
+                    aria-selected={desktopSidebarMode === 'chat'}
+                  >
+                    <i className="bi bi-chat-dots-fill me-1" aria-hidden="true" />
+                    Chat
+                  </button>
+                  <button
+                    className={`btn btn-outline-primary ${desktopSidebarMode === 'capture' ? 'active' : ''}`}
+                    type="button"
+                    onClick={() => setDesktopSidebarMode('capture')}
+                    aria-selected={desktopSidebarMode === 'capture'}
+                  >
+                    <i className="bi bi-mic-fill me-1" aria-hidden="true" />
+                    Notiz aufnehmen
+                  </button>
+                </div>
                 <button className="btn btn-outline-secondary btn-sm" type="button" onClick={() => window.location.assign('/')}>
                   <i className="bi bi-phone me-1" aria-hidden="true" />
                   PWA öffnen
@@ -1083,58 +1421,88 @@ export default function App() {
           <div className="desktop-layout flex-grow-1 d-flex gap-3 min-h-0">
             <aside className="desktop-sidebar card border-0 shadow-sm">
               <div className="card-body p-3 p-lg-4 d-flex flex-column gap-3 h-100">
-                <div className="desktop-sidebar-header d-flex flex-column gap-2">
-                  <span className="badge rounded-pill text-bg-light border text-secondary align-self-start">Voice first</span>
-                  <h2 className="h4 mb-0">Notizen aufnehmen</h2>
-                  <p className="text-secondary mb-0">Die Aufnahme sitzt links, damit die Pinnwand frei bleibt.</p>
-                </div>
-
-                <div className="desktop-record-zone text-center d-flex flex-column align-items-center gap-3">
-                  <button
-                    className="btn btn-primary rounded-circle desktop-record-button d-inline-flex align-items-center justify-content-center"
-                    onClick={() => void startVoiceCapture()}
-                    type="button"
-                    disabled={recorder.isRecording || !captureStartEnabled}
-                    aria-label={recorder.isRecording ? 'Aufnahme läuft' : 'Sprachnotiz aufnehmen'}
-                  >
-                    <i className={`bi ${recorder.isRecording ? 'bi-stop-fill' : 'bi-mic-fill'} desktop-record-icon`} aria-hidden="true" />
-                  </button>
-                  <div>
-                    <p className="h5 mb-1">Sprachnotiz aufnehmen</p>
-                    <p className="text-secondary mb-0">Eine große Taste, daneben Textnotizen und Einstellungen.</p>
-                  </div>
-                  {recorder.microphoneHint ? <div className="alert alert-warning mb-0 py-2 w-100">{recorder.microphoneHint}</div> : null}
-                </div>
-
-                <div className="desktop-quick-actions d-grid gap-2">
-                  <button className="btn btn-outline-secondary" onClick={() => setTextNoteOpen(true)} type="button">
-                    <i className="bi bi-pencil-square me-1" aria-hidden="true" />
-                    Textnotiz
-                  </button>
-                  <button className="btn btn-outline-primary" onClick={() => setSettingsOpen(true)} type="button">
-                    <i className="bi bi-gear-fill me-1" aria-hidden="true" />
-                    Einstellungen
-                  </button>
-                  <button className="btn btn-outline-primary" onClick={() => void reloadNotes()} type="button">
-                    <i className="bi bi-arrow-clockwise me-1" aria-hidden="true" />
-                    Pinnwand aktualisieren
-                  </button>
-                </div>
-
-                <div className="desktop-stats card border-0 shadow-sm mt-auto">
-                  <div className="card-body p-3 d-flex flex-column gap-3">
-                    <div className="d-flex align-items-center justify-content-between gap-2">
-                      <h3 className="h6 mb-0">Übersicht</h3>
-                      <span className="badge rounded-pill text-bg-light border text-secondary">{noteCount}</span>
+                {desktopSidebarMode === 'chat' ? (
+                  <>
+                    <div className="desktop-sidebar-header d-flex flex-column gap-2">
+                      <span className="badge rounded-pill text-bg-light border text-secondary align-self-start">RAG-Chat</span>
+                      <h2 className="h4 mb-0">Mit Notizen sprechen</h2>
+                      <p className="text-secondary mb-0">Die Chatkarte sitzt dauerhaft links und lässt sich direkt aufrufen.</p>
                     </div>
-                    <div className="d-flex flex-wrap gap-2">
-                      <span className="badge rounded-pill board-kind-badge">Notiz {categoryCounts['']}</span>
-                      <span className="badge rounded-pill board-kind-badge">Idee {categoryCounts.Idea}</span>
-                      <span className="badge rounded-pill board-kind-badge">To-Do {categoryCounts.Task}</span>
+
+                    <div className="desktop-chat-body desktop-chat-body-embedded">
+                      <ChatView
+                        messages={chatMessages}
+                        draft={chatDraft}
+                        loading={chatLoading}
+                        error={chatError}
+                        noteCount={noteCount}
+                        onOpenNote={openNoteDetail}
+                        onDraftChange={setChatDraft}
+                        onSend={() => void sendChatMessage()}
+                        onClear={() => {
+                          setChatMessages([createChatGreeting()])
+                          setChatDraft('')
+                          setChatError('')
+                        }}
+                      />
                     </div>
-                    <p className="text-secondary mb-0">Alle Einträge landen im selben Backend, die Desktop-Ansicht bleibt aber separat erreichbar.</p>
-                  </div>
-                </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="desktop-sidebar-header d-flex flex-column gap-2">
+                      <span className="badge rounded-pill text-bg-light border text-secondary align-self-start">Voice first</span>
+                      <h2 className="h4 mb-0">Notizen aufnehmen</h2>
+                      <p className="text-secondary mb-0">Die Aufnahme sitzt links, damit die Pinnwand frei bleibt.</p>
+                    </div>
+
+                    <div className="desktop-record-zone text-center d-flex flex-column align-items-center gap-3">
+                      <button
+                        className="btn btn-primary rounded-circle desktop-record-button d-inline-flex align-items-center justify-content-center"
+                        onClick={() => void startVoiceCapture()}
+                        type="button"
+                        disabled={recorder.isRecording || !captureStartEnabled}
+                        aria-label={recorder.isRecording ? 'Aufnahme läuft' : 'Sprachnotiz aufnehmen'}
+                      >
+                        <i className={`bi ${recorder.isRecording ? 'bi-stop-fill' : 'bi-mic-fill'} desktop-record-icon`} aria-hidden="true" />
+                      </button>
+                      <div>
+                        <p className="h5 mb-1">Sprachnotiz aufnehmen</p>
+                        <p className="text-secondary mb-0">Eine große Taste, daneben Textnotizen und Einstellungen.</p>
+                      </div>
+                      {recorder.microphoneHint ? <div className="alert alert-warning mb-0 py-2 w-100">{recorder.microphoneHint}</div> : null}
+                    </div>
+
+                    <div className="desktop-quick-actions d-grid gap-2">
+                      <button className="btn btn-outline-secondary" onClick={() => setTextNoteOpen(true)} type="button">
+                        <i className="bi bi-pencil-square me-1" aria-hidden="true" />
+                        Textnotiz
+                      </button>
+                      <button className="btn btn-outline-primary" onClick={() => setSettingsOpen(true)} type="button">
+                        <i className="bi bi-gear-fill me-1" aria-hidden="true" />
+                        Einstellungen
+                      </button>
+                      <button className="btn btn-outline-primary" onClick={() => void reloadNotes()} type="button">
+                        <i className="bi bi-arrow-clockwise me-1" aria-hidden="true" />
+                        Pinnwand aktualisieren
+                      </button>
+                    </div>
+
+                    <div className="desktop-stats card border-0 shadow-sm mt-auto">
+                      <div className="card-body p-3 d-flex flex-column gap-3">
+                        <div className="d-flex align-items-center justify-content-between gap-2">
+                          <h3 className="h6 mb-0">Übersicht</h3>
+                          <span className="badge rounded-pill text-bg-light border text-secondary">{noteCount}</span>
+                        </div>
+                        <div className="d-flex flex-wrap gap-2">
+                          <span className="badge rounded-pill board-kind-badge">Notiz {categoryCounts['']}</span>
+                          <span className="badge rounded-pill board-kind-badge">Idee {categoryCounts.Idea}</span>
+                          <span className="badge rounded-pill board-kind-badge">To-Do {categoryCounts.Task}</span>
+                        </div>
+                        <p className="text-secondary mb-0">Alle Einträge landen im selben Backend, die Desktop-Ansicht bleibt aber separat erreichbar.</p>
+                      </div>
+                    </div>
+                  </>
+                )}
 
                 <button className="btn btn-link text-decoration-none align-self-start px-0" type="button" onClick={() => window.location.assign('/')}>
                   Zur mobilen PWA zurück
@@ -1283,6 +1651,24 @@ export default function App() {
                   onOpenInbox={() => activateTab('inbox')}
                   onOpenBoard={() => activateTab('board')}
                   noteCount={noteCount}
+                />
+              </section>
+
+              <section className="page-panel h-100 d-flex flex-column gap-3">
+                <ChatView
+                  messages={chatMessages}
+                  draft={chatDraft}
+                  loading={chatLoading}
+                  error={chatError}
+                  noteCount={noteCount}
+                  onOpenNote={openNoteDetail}
+                  onDraftChange={setChatDraft}
+                  onSend={() => void sendChatMessage()}
+                  onClear={() => {
+                    setChatMessages([createChatGreeting()])
+                    setChatDraft('')
+                    setChatError('')
+                  }}
                 />
               </section>
 
@@ -1483,6 +1869,134 @@ function SparkView(props: {
               <i className="bi bi-kanban-fill me-1" aria-hidden="true" />
               Board öffnen
             </button>
+          </div>
+        </div>
+      </div>
+    </section>
+  )
+}
+
+function ChatView(props: {
+  messages: ChatThreadMessage[]
+  draft: string
+  loading: boolean
+  error: string
+  noteCount: number
+  onOpenNote: (noteId: string) => void
+  onDraftChange: (value: string) => void
+  onSend: () => void
+  onClear: () => void
+}) {
+  const latestAssistant = [...props.messages].reverse().find((message) => message.role === 'assistant')
+
+  return (
+    <section className="chat-view h-100 d-flex flex-column gap-3">
+      <div className="card border-0 shadow-sm chat-hero">
+        <div className="card-body p-3 p-lg-4 d-flex flex-column gap-2">
+          <span className="badge rounded-pill text-bg-light border text-secondary align-self-start">RAG-Chat</span>
+          <h2 className="chat-title mb-0">Mit deinen Notizen sprechen.</h2>
+          <p className="chat-copy text-secondary mb-0">
+            Frag nach Zusammenfassungen, baue Ideen weiter aus oder lass dir direkt neue Notizen und Gruppen anlegen.
+          </p>
+        </div>
+      </div>
+
+      <div className="chat-panel card border-0 shadow-sm flex-grow-1">
+        <div className="card-body p-3 p-lg-4 d-flex flex-column gap-3 h-100 min-h-0">
+          <div className="d-flex flex-wrap align-items-center justify-content-between gap-2">
+            <div className="d-flex flex-wrap gap-2">
+              <span className="badge rounded-pill text-bg-light border text-secondary">{props.noteCount} Notizen im Speicher</span>
+              <span className="badge rounded-pill text-bg-light border text-secondary">OpenAI Chat</span>
+            </div>
+            <button className="btn btn-outline-secondary btn-sm" type="button" onClick={props.onClear} disabled={props.loading}>
+              <i className="bi bi-arrow-counterclockwise me-1" aria-hidden="true" />
+              Neu starten
+            </button>
+          </div>
+
+          {props.error ? <div className="alert alert-warning mb-0 py-2">{props.error}</div> : null}
+
+          <div className="chat-thread flex-grow-1 overflow-auto pe-1">
+            {props.messages.map((message) => (
+              <div key={message.id} className={`chat-row chat-row-${message.role}`}>
+                <div className={`chat-bubble chat-bubble-${message.role}`}>
+                  <div className="chat-meta d-flex align-items-center justify-content-between gap-2 mb-1">
+                    <span className="fw-semibold">{message.role === 'assistant' ? 'BrainSession' : 'Du'}</span>
+                    <span className="small text-secondary">{formatRelativeDate(message.createdAt)}</span>
+                  </div>
+                  <div className="chat-message-text">{renderChatMessageBlocks(message.content)}</div>
+                  {message.actions && message.actions.length > 0 ? (
+                    <div className="chat-action-list d-flex flex-wrap gap-2 mt-3">
+                      {message.actions.map((action, index) => (
+                        <span key={`${message.id}-${index}`} className="badge rounded-pill text-bg-light border text-secondary">
+                          {action.type === 'create_note'
+                            ? 'Notiz angelegt'
+                            : action.type === 'create_group'
+                              ? 'Gruppe angelegt'
+                              : action.type}
+                        </span>
+                      ))}
+                    </div>
+                  ) : null}
+                  {message.references && message.references.length > 0 ? (
+                    <div className="chat-reference-list d-flex flex-wrap gap-2 mt-3">
+                      {message.references.map((reference) => (
+                        <button
+                          key={`${message.id}-${reference.noteId}`}
+                          className="chat-reference-chip btn btn-sm btn-outline-secondary"
+                          type="button"
+                          onClick={() => props.onOpenNote(reference.noteId)}
+                        >
+                          <span className="fw-semibold">{reference.noteTitle || reference.noteId}</span>
+                          {reference.reason ? <span className="chat-reference-reason">{reference.reason}</span> : null}
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+            ))}
+
+            {props.loading ? (
+              <div className="chat-row chat-row-assistant">
+                <div className="chat-bubble chat-bubble-assistant chat-bubble-loading">
+                  <span className="spinner-border spinner-border-sm me-2" aria-hidden="true" />
+                  BrainSession denkt nach …
+                </div>
+              </div>
+            ) : null}
+
+            {!latestAssistant && !props.loading ? (
+              <div className="chat-empty text-secondary rounded-4 border border-dashed p-4">
+                Stell eine konkrete Frage wie „Fasse meine letzten Ideen zusammen“ oder „Mach aus dieser Idee eine Notiz“.
+              </div>
+            ) : null}
+          </div>
+
+          <div className="chat-composer card border-0 shadow-none mb-0">
+            <div className="card-body p-0 d-flex flex-column gap-2">
+              <label className="small text-secondary fw-semibold" htmlFor="chat-input">
+                Nachricht an deine Notizen
+              </label>
+              <textarea
+                id="chat-input"
+                className="form-control chat-input"
+                rows={4}
+                value={props.draft}
+                onChange={(event) => props.onDraftChange(event.target.value)}
+                placeholder="Frag nach Zusammenfassungen, Ideen oder neuen Gruppen …"
+                disabled={props.loading}
+              />
+              <div className="d-flex flex-wrap gap-2">
+                <button className="btn btn-primary flex-grow-1" type="button" onClick={props.onSend} disabled={props.loading || !props.draft.trim()}>
+                  <i className={`bi ${props.loading ? 'bi-hourglass-split' : 'bi-send-fill'} me-2`} aria-hidden="true" />
+                  {props.loading ? 'Sende …' : 'Senden'}
+                </button>
+                <button className="btn btn-outline-secondary" type="button" onClick={() => props.onDraftChange('')} disabled={props.loading || !props.draft.trim()}>
+                  Leeren
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -2495,6 +3009,18 @@ function SettingsModal(props: {
                 className="form-control"
                 value={props.settingsDraft.openAiModel}
                 onChange={(event) => props.setSettingsDraft((current) => ({ ...current, openAiModel: event.target.value }))}
+              />
+            </div>
+          </div>
+
+          <div className="col-12 col-md-6">
+            <div className="input-group">
+              <span className="input-group-text">Chat Model</span>
+              <input
+                id="settings-chat-model"
+                className="form-control"
+                value={props.settingsDraft.chatModel}
+                onChange={(event) => props.setSettingsDraft((current) => ({ ...current, chatModel: event.target.value }))}
               />
             </div>
           </div>

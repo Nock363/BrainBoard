@@ -15,9 +15,11 @@ from fastapi.staticfiles import StaticFiles
 
 from backend.ai import (
     classify_note_category,
+    generate_chat_response,
     generate_inspiration_suggestion,
     group_notes_by_theme,
     interpret_text_note,
+    rank_notes_for_query,
     set_llm_logger,
     summarize_note_timeline,
     transcribe_audio,
@@ -29,6 +31,8 @@ from backend.ai import (
 from backend.config import get_config
 from backend.models import (
     AppendTextRequest,
+    ChatRequest,
+    ChatResponse,
     BoardGroupItem,
     BoardGroupDraft,
     BoardGroupsResponse,
@@ -181,6 +185,76 @@ def resolved_note_transcript(note: dict[str, object]) -> str:
     return "\n".join(note_transcript_segments(note))
 
 
+def latest_user_message(messages: list[dict[str, object]]) -> str:
+    for message in reversed(messages):
+        if not isinstance(message, dict):
+            continue
+        if clean_text_value(message.get("role")) != "user":
+            continue
+        content = clean_text_value(message.get("content"))
+        if content:
+            return content
+    return ""
+
+
+def execute_chat_actions(
+    actions: list[dict[str, object]],
+    *,
+    api_key: str,
+    summary_model: str,
+    summary_prompt_prefix: str,
+    category_prompt_prefix: str,
+) -> list[dict[str, object]]:
+    executed_actions: list[dict[str, object]] = []
+    current_groups = store.load_board_groups()
+    groups_changed = False
+
+    for action in actions:
+        action_type = clean_text_value(action.get("type")).lower()
+        if action_type == "create_note":
+            text = clean_text_value(action.get("text"))
+            if not text:
+                continue
+            note = build_note_from_text(
+                text,
+                api_key=api_key,
+                summary_model=summary_model,
+                summary_prompt_prefix=summary_prompt_prefix,
+                category_prompt_prefix=category_prompt_prefix,
+            )
+            store.save_note(note)
+            executed_actions.append({"type": "create_note", "noteId": note["id"], "title": note.get("title", "")})
+            continue
+
+        if action_type == "create_group":
+            title = clean_text_value(action.get("title"))
+            if not title:
+                continue
+            description = clean_text_value(action.get("description"))
+            note_ids = clean_note_id_list(action.get("noteIds", []))
+            group_key = f"chat-group-{uuid4().hex[:10]}"
+            current_groups = [
+                group
+                for group in current_groups
+                if clean_text_value(group.get("key")) != group_key and clean_text_value(group.get("title")) != title
+            ]
+            current_groups.append(
+                {
+                    "key": group_key,
+                    "title": title,
+                    "description": description,
+                    "source": "manual",
+                    "noteIds": note_ids,
+                }
+            )
+            groups_changed = True
+            executed_actions.append({"type": "create_group", "groupKey": group_key, "title": title, "noteIds": note_ids})
+
+    if groups_changed:
+        store.save_board_groups(current_groups)
+    return executed_actions
+
+
 def build_board_groups_response(group_defs: list[dict[str, object]], notes: list[dict[str, object]]) -> BoardGroupsResponse:
     note_map = {
         str(note.get("id", "")): note
@@ -268,6 +342,7 @@ def default_settings(config) -> dict[str, object]:
         "transcriptionModel": config.transcription_model,
         "summaryModel": config.summary_model,
         "followUpModel": config.follow_up_model,
+        "chatModel": config.chat_model,
         "language": config.language,
         "transcriptionPrompt": DEFAULT_TRANSCRIPTION_PROMPT,
         "summaryPromptPrefix": DEFAULT_SUMMARY_PROMPT_PREFIX,
@@ -432,6 +507,7 @@ def get_settings() -> SettingsResponse:
         transcriptionModel=str(current.get("transcriptionModel", config.transcription_model)),
         summaryModel=str(current.get("summaryModel", config.summary_model)),
         followUpModel=str(current.get("followUpModel", config.follow_up_model)),
+        chatModel=str(current.get("chatModel", config.chat_model)),
         language=str(current.get("language", config.language)),
         transcriptionPrompt=transcription_prompt_from(current),
         summaryPromptPrefix=summary_prompt_prefix_from(current),
@@ -456,6 +532,8 @@ def update_settings(payload: UpdateSettingsRequest) -> SettingsResponse:
         current["transcriptionModel"] = payload.transcriptionModel.strip()
     if payload.followUpModel is not None and payload.followUpModel.strip():
         current["followUpModel"] = payload.followUpModel.strip()
+    if payload.chatModel is not None and payload.chatModel.strip():
+        current["chatModel"] = payload.chatModel.strip()
     if payload.language is not None and payload.language.strip():
         current["language"] = payload.language.strip()
     if payload.transcriptionPrompt is not None:
@@ -552,6 +630,48 @@ def create_inspiration() -> InspirationResponse:
     follow_up_model = str(current_settings.get("followUpModel") or config.follow_up_model)
     suggestion = generate_inspiration_suggestion(api_key, follow_up_model, store.list_notes())
     return InspirationResponse(**suggestion)
+
+
+@app.post("/api/chat", response_model=ChatResponse)
+def chat(payload: ChatRequest) -> ChatResponse:
+    current_settings = {**default_settings(config), **store.load_settings()}
+    api_key = str(current_settings.get("openAiApiKey") or config.openai_api_key or "")
+    chat_model = str(current_settings.get("chatModel") or config.chat_model)
+    summary_model = str(current_settings.get("summaryModel") or config.summary_model)
+    summary_prompt = summary_prompt_prefix_from(current_settings)
+    category_prompt = category_prompt_prefix_from(current_settings)
+    messages = [message.model_dump() for message in payload.messages if clean_text_value(message.content)]
+    user_query = latest_user_message(messages)
+    notes = store.list_notes()
+    relevant_notes = rank_notes_for_query(notes, user_query)
+
+    if not messages:
+        raise HTTPException(status_code=400, detail="Keine Chat-Nachrichten vorhanden")
+    if not api_key:
+        raise HTTPException(status_code=400, detail="OpenAI API key fehlt")
+
+    result = generate_chat_response(api_key, chat_model, messages, relevant_notes)
+    actions = execute_chat_actions(
+        result.get("actions", []),
+        api_key=api_key,
+        summary_model=summary_model,
+        summary_prompt_prefix=summary_prompt,
+        category_prompt_prefix=category_prompt,
+    )
+
+    reply = clean_text_value(result.get("reply"))
+    if actions:
+        created_notes = [action for action in actions if action.get("type") == "create_note"]
+        created_groups = [action for action in actions if action.get("type") == "create_group"]
+        prefix_bits: list[str] = []
+        if created_notes:
+            prefix_bits.append(f"{len(created_notes)} Notiz{'en' if len(created_notes) != 1 else ''} erstellt")
+        if created_groups:
+            prefix_bits.append(f"{len(created_groups)} Gruppe{'n' if len(created_groups) != 1 else ''} erstellt")
+        if prefix_bits:
+            reply = f"Ich habe {' und '.join(prefix_bits)}. {reply}".strip()
+
+    return ChatResponse(reply=reply, actions=actions, references=result.get("references", []))
 
 
 @app.get("/api/notes/{note_id}", response_model=NoteResponse)

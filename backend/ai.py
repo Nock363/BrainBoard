@@ -516,6 +516,121 @@ def _build_inspiration_schema() -> dict[str, Any]:
     }
 
 
+def _build_chat_schema() -> dict[str, Any]:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "reply": {"type": "string"},
+            "references": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "noteId": {"type": "string"},
+                        "noteTitle": {"type": "string"},
+                        "reason": {"type": "string"},
+                    },
+                    "required": ["noteId", "noteTitle", "reason"],
+                },
+            },
+            "actions": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "type": {"type": "string"},
+                        "text": {"type": "string"},
+                        "title": {"type": "string"},
+                        "description": {"type": "string"},
+                        "noteIds": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                        },
+                    },
+                    "required": ["type", "text", "title", "description", "noteIds"],
+                },
+            },
+        },
+        "required": ["reply", "references", "actions"],
+    }
+
+
+def _chat_excerpt(value: str, limit: int = 320) -> str:
+    clean = _clean_text(value)
+    if len(clean) <= limit:
+        return clean
+    return f"{clean[: limit - 1].rstrip()}…"
+
+
+def _chat_note_payload(note: dict[str, Any]) -> dict[str, Any]:
+    note_id = _clean_text(str(note.get("id", "")))
+    title = _clean_text(str(note.get("title", ""))) or "Neue Notiz"
+    summary = _clean_text(str(note.get("summary", "")))
+    raw_transcript = _clean_text(str(note.get("rawTranscript", "")))
+    category = {
+        "Idea": "Idee",
+        "Task": "To-Do",
+        "": "Notiz",
+    }.get(_normalize_category(note.get("category")), "Notiz")
+    return {
+        "id": note_id,
+        "title": title,
+        "category": category,
+        "summary": _chat_excerpt(summary or raw_transcript or title, 420),
+    }
+
+
+def _chat_message_blob(messages: list[dict[str, str]]) -> str:
+    parts: list[str] = []
+    for message in messages[-12:]:
+        role = _clean_text(message.get("role", "user")) or "user"
+        content = _chat_excerpt(message.get("content", ""), 500)
+        if content:
+            parts.append(f"{role}: {content}")
+    return "\n".join(parts)
+
+
+def rank_notes_for_query(notes: list[dict[str, Any]], query: str, limit: int = 8) -> list[dict[str, Any]]:
+    clean_query = _clean_text(query)
+    query_tokens = [token for token in re.findall(r"[\wÄÖÜäöüß]+", clean_query.lower()) if len(token) >= 3]
+    if not notes:
+        return []
+
+    if not query_tokens:
+        return [note for note in notes if _clean_text(str(note.get("id", "")))][:limit]
+
+    ranked: list[tuple[float, dict[str, Any]]] = []
+    for note in notes:
+        note_id = _clean_text(str(note.get("id", "")))
+        if not note_id:
+            continue
+        haystack_title = _clean_text(str(note.get("title", ""))).lower()
+        haystack_summary = _clean_text(str(note.get("summary", ""))).lower()
+        haystack_transcript = _clean_text(str(note.get("rawTranscript", ""))).lower()
+        haystack = f"{haystack_title} {haystack_summary} {haystack_transcript}"
+        score = 0.0
+        for token in query_tokens:
+            if token in haystack_title:
+                score += 4.0
+            if token in haystack_summary:
+                score += 2.0
+            if token in haystack_transcript:
+                score += 1.0
+        try:
+            updated_at = datetime.fromisoformat(str(note.get("updatedAt", "")).replace("Z", "+00:00"))
+            score += max(0.0, 1.0 - (datetime.now(timezone.utc) - updated_at).total_seconds() / 86_400_000)
+        except Exception:
+            pass
+        if score > 0:
+            ranked.append((score, note))
+
+    ranked.sort(key=lambda item: item[0], reverse=True)
+    return [item[1] for item in ranked[:limit]] or [note for note in notes if _clean_text(str(note.get("id", "")))][:limit]
+
+
 def _compact_note_group_payload(note: dict[str, Any]) -> dict[str, Any]:
     note_id = _clean_text(str(note.get("id", "")))
     title = _clean_text(str(note.get("title", ""))) or "Neue Notiz"
@@ -965,6 +1080,122 @@ def generate_inspiration_suggestion(
         log_entry["response"] = _format_inspiration_log(fallback["context"], fallback["question"])
         _emit_llm_log(log_entry)
         return fallback
+
+
+def generate_chat_response(
+    api_key: str,
+    model: str,
+    messages: list[dict[str, Any]],
+    relevant_notes: list[dict[str, Any]],
+) -> dict[str, Any]:
+    clean_key = api_key.strip()
+    normalized_messages = _normalize_messages(messages)
+    if not clean_key:
+        raise ValueError("OpenAI API key fehlt")
+
+    note_payload = [_chat_note_payload(note) for note in relevant_notes if _clean_text(str(note.get("id", "")))]
+    conversation_blob = _chat_message_blob(normalized_messages)
+    payload = {
+        "model": model.strip() or "gpt-5-mini",
+        "input": [
+            {
+                "role": "system",
+                "content": (
+                    "Du bist der BrainSession-Chatbot und arbeitest auf Deutsch. "
+                    "Du hast Zugriff auf Notizen, die wie ein RAG-System bereitgestellt werden. "
+                    "Nutze diese Notizen als primären Kontext, baue auf ihnen auf und antworte knapp, konkret und hilfreich. "
+                    "Wenn die Notizen nicht reichen, stelle eine kurze Rueckfrage statt etwas zu erfinden. "
+                    "Neue Notizen oder Gruppen darfst du nur anlegen, wenn der Nutzer das ausdrücklich verlangt. "
+                    "Bei normalen Fragen, Zusammenfassungen oder Tests musst du actions leer lassen. "
+                    "Die reply darf Markdown verwenden: Absätze, Aufzählungen, nummerierte Listen, Fettung und kurze Code-Einschübe. "
+                    "Wenn du Listen ausgibst, schreibe jeden Punkt in eine eigene Zeile. "
+                    "Wenn du dich auf konkrete Notizen beziehst, gib ihre IDs und eine kurze Begründung in references aus. "
+                    "Gib niemals rohe JSON-Objekte im Antworttext aus. "
+                    "Antworte nur als JSON mit reply, references und actions."
+                ),
+            },
+            {
+                "role": "system",
+                "content": (
+                    f"Verfuegbare Notizen als Kontext:\n{json.dumps(note_payload, ensure_ascii=False, indent=2)}\n\n"
+                    f"Konversationsverlauf:\n{conversation_blob or '(leer)'}"
+                ),
+            },
+            *normalized_messages,
+        ],
+        "text": {
+            "format": {
+                "type": "json_schema",
+                "name": "brainsession_chat_reply",
+                "schema": _build_chat_schema(),
+            }
+        },
+    }
+    log_entry = _make_llm_log_entry("Chat", payload["model"], _normalize_messages(payload["input"]))
+    try:
+        response = _openai_responses(clean_key, payload)
+        raw = _extract_output_text(response)
+        parsed = json.loads(raw)
+        reply = _clean_text(str(parsed.get("reply", "")))
+        references_raw = parsed.get("references") if isinstance(parsed, dict) else []
+        references: list[dict[str, Any]] = []
+        if isinstance(references_raw, list):
+            for reference in references_raw:
+                if not isinstance(reference, dict):
+                    continue
+                note_id = _clean_text(str(reference.get("noteId", "")))
+                if not note_id:
+                    continue
+                references.append(
+                    {
+                        "noteId": note_id,
+                        "noteTitle": _clean_text(str(reference.get("noteTitle", ""))),
+                        "reason": _clean_text(str(reference.get("reason", ""))),
+                    }
+                )
+        if not references:
+            references = [
+                {
+                    "noteId": _clean_text(str(note.get("id", ""))),
+                    "noteTitle": _clean_text(str(note.get("title", ""))) or "Neue Notiz",
+                    "reason": "relevanter Kontext",
+                }
+                for note in relevant_notes[:3]
+                if _clean_text(str(note.get("id", "")))
+            ]
+        actions_raw = parsed.get("actions") if isinstance(parsed, dict) else []
+        actions: list[dict[str, Any]] = []
+        if isinstance(actions_raw, list):
+            for action in actions_raw:
+                if not isinstance(action, dict):
+                    continue
+                action_type = _clean_text(str(action.get("type", ""))).lower()
+                if action_type not in {"create_note", "create_group"}:
+                    continue
+                actions.append(
+                    {
+                        "type": action_type,
+                        "text": _clean_text(str(action.get("text", ""))),
+                        "title": _clean_text(str(action.get("title", ""))),
+                        "description": _clean_text(str(action.get("description", ""))),
+                        "noteIds": _normalize_list(action.get("noteIds", [])),
+                    }
+                )
+
+        if not reply:
+            raise ValueError("Leere Chat-Antwort")
+
+        log_entry["response"] = _format_question_log(reply)
+        _emit_llm_log(log_entry)
+        return {"reply": reply, "references": references, "actions": actions}
+    except Exception:
+        log_entry["error"] = "Konnte keine Chat-Antwort erzeugen."
+        _emit_llm_log(log_entry)
+        return {
+            "reply": "Ich kann gerade nicht mit der OpenAI API sprechen. Bitte prüfe den API-Key oder versuche es gleich noch einmal.",
+            "references": [],
+            "actions": [],
+        }
 
 
 def transcribe_audio(

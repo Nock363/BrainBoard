@@ -35,6 +35,7 @@ class SettingsResponse(BaseModel):
     transcriptionModel: str
     summaryModel: str
     followUpModel: str
+    chatModel: str
     language: str
     transcriptionPrompt: str
     summaryPromptPrefix: str
@@ -50,6 +51,7 @@ class UpdateSettingsRequest(BaseModel):
     transcriptionModel: str | None = None
     summaryModel: str | None = None
     followUpModel: str | None = None
+    chatModel: str | None = None
     language: str | None = None
     transcriptionPrompt: str | None = None
     summaryPromptPrefix: str | None = None
@@ -155,3 +157,32 @@ class RoutineResponse(BaseModel):
     ok: bool
     updatedNotes: int
     skippedNotes: int = 0
+
+
+class ChatMessage(BaseModel):
+    role: Literal["system", "user", "assistant"]
+    content: str
+
+
+class ChatAction(BaseModel):
+    type: Literal["create_note", "create_group"]
+    text: str = ""
+    title: str = ""
+    description: str = ""
+    noteIds: list[str] = Field(default_factory=list)
+
+
+class ChatReference(BaseModel):
+    noteId: str
+    noteTitle: str = ""
+    reason: str = ""
+
+
+class ChatRequest(BaseModel):
+    messages: list[ChatMessage] = Field(default_factory=list)
+
+
+class ChatResponse(BaseModel):
+    reply: str
+    actions: list[ChatAction] = Field(default_factory=list)
+    references: list[ChatReference] = Field(default_factory=list)

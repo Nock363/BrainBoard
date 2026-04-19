@@ -1,4 +1,4 @@
-export type TabKey = 'capture' | 'inbox' | 'inspiration' | 'board'
+export type TabKey = 'capture' | 'chat' | 'inbox' | 'inspiration' | 'board'
 
 export type NoteCategory = '' | 'Idea' | 'Task'
 
@@ -32,6 +32,7 @@ export interface SettingsResponse {
   transcriptionModel: string
   summaryModel: string
   followUpModel: string
+  chatModel: string
   language: string
   transcriptionPrompt: string
   summaryPromptPrefix: string
@@ -107,4 +108,33 @@ export interface RoutineResponse {
   ok: boolean
   updatedNotes: number
   skippedNotes: number
+}
+
+export interface ChatMessage {
+  role: 'system' | 'user' | 'assistant'
+  content: string
+}
+
+export interface ChatAction {
+  type: 'create_note' | 'create_group'
+  text: string
+  title: string
+  description: string
+  noteIds: string[]
+}
+
+export interface ChatReference {
+  noteId: string
+  noteTitle: string
+  reason: string
+}
+
+export interface ChatRequest {
+  messages: ChatMessage[]
+}
+
+export interface ChatResponse {
+  reply: string
+  actions: ChatAction[]
+  references: ChatReference[]
 }

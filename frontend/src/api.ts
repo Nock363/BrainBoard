@@ -1,4 +1,6 @@
 import type {
+  ChatRequest,
+  ChatResponse,
   BoardGroupDraft,
   LlmLogsResponse,
   BoardGroupsResponse,
@@ -65,6 +67,7 @@ export const api = {
     transcriptionModel?: string
     summaryModel?: string
     followUpModel?: string
+    chatModel?: string
     language?: string
     transcriptionPrompt?: string
     summaryPromptPrefix?: string
@@ -183,6 +186,12 @@ export const api = {
   },
   async exportTechnicalReport(): Promise<ReportResponse> {
     return requestJson('/api/reports/technical')
+  },
+  async chat(payload: ChatRequest): Promise<ChatResponse> {
+    return requestJson('/api/chat', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    })
   },
 }
 

@@ -831,6 +831,14 @@ main {
   overflow: auto;
 }
 
+.desktop-sidebar-switcher {
+  width: 100%;
+}
+
+.desktop-sidebar-switcher .btn {
+  flex: 1 1 0;
+}
+
 .desktop-stage {
   min-width: 0;
 }
@@ -1554,6 +1562,134 @@ main {
 .detail-footer,
 .note-detail-footer {
   padding-top: 0.25rem;
+}
+
+.chat-view,
+.inspiration-view,
+.spark-view {
+  min-height: 0;
+}
+
+.chat-hero,
+.chat-panel {
+  background: rgba(255, 255, 255, 0.9);
+}
+
+.chat-thread {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+  min-height: 0;
+}
+
+.chat-row {
+  display: flex;
+}
+
+.chat-row-user {
+  justify-content: flex-end;
+}
+
+.chat-row-assistant,
+.chat-row-system {
+  justify-content: flex-start;
+}
+
+.chat-bubble {
+  max-width: min(42rem, 92%);
+  padding: 0.95rem 1rem;
+  border-radius: 1.1rem;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  box-shadow: 0 0.8rem 1.5rem rgba(15, 23, 42, 0.05);
+  background: #fff;
+}
+
+.chat-bubble-user {
+  background: linear-gradient(180deg, rgba(37, 99, 235, 0.96), rgba(29, 78, 216, 0.96));
+  color: #fff;
+  border-color: rgba(37, 99, 235, 0.25);
+}
+
+.chat-bubble-assistant {
+  background: rgba(255, 255, 255, 0.96);
+}
+
+.chat-bubble-loading {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--bs-secondary-color);
+}
+
+.chat-message-text {
+  line-height: 1.55;
+}
+
+.chat-paragraph {
+  white-space: pre-wrap;
+}
+
+.chat-list {
+  margin: 0;
+  padding-left: 1.25rem;
+}
+
+.chat-list-item + .chat-list-item {
+  margin-top: 0.3rem;
+}
+
+.chat-reference-chip {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.15rem;
+  padding: 0.55rem 0.75rem;
+  text-align: left;
+  white-space: normal;
+  max-width: 100%;
+}
+
+.chat-reference-reason {
+  font-size: 0.74rem;
+  color: var(--app-muted);
+}
+
+.chat-reference-list .btn {
+  border-radius: 0.9rem;
+}
+
+.chat-action-list .badge {
+  font-weight: 600;
+}
+
+.chat-input {
+  min-height: 6.75rem;
+  resize: vertical;
+}
+
+.desktop-chat-panel {
+  width: min(92vw, 58rem);
+}
+
+.desktop-chat-body {
+  min-height: min(72vh, 44rem);
+}
+
+.desktop-chat-body-embedded {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.desktop-chat-body-embedded .chat-view {
+  min-height: 0;
+}
+
+.desktop-chat-body-embedded .chat-panel {
+  min-height: 0;
+}
+
+.desktop-chat-body-embedded .chat-thread {
+  min-height: 12rem;
 }
 
 @keyframes voice-glow {
