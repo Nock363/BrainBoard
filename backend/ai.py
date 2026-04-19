@@ -206,6 +206,36 @@ def _format_transcription_log(text: str) -> str:
     return f"transcript: {_clean_text(text) or '(leer)'}"
 
 
+def _is_suspicious_transcript(text: str) -> bool:
+    clean = _clean_text(text)
+    if not clean:
+        return True
+
+    words = re.findall(r"[\wÄÖÜäöüß]+", clean.lower())
+    if len(words) < 6:
+        return False
+
+    unique_words = set(words)
+    unique_ratio = len(unique_words) / max(1, len(words))
+    if len(words) >= 12 and unique_ratio < 0.35:
+        return True
+
+    sentences = [segment.strip() for segment in re.split(r"[.!?]+", clean) if segment.strip()]
+    if len(sentences) >= 3:
+        normalized_sentences = [re.sub(r"\s+", " ", sentence.lower()) for sentence in sentences]
+        most_common_sentence = Counter(normalized_sentences).most_common(1)[0][1]
+        if most_common_sentence >= 3:
+            return True
+
+    window_size = min(10, len(words) // 2)
+    if window_size >= 4:
+        windows = [" ".join(words[index : index + window_size]) for index in range(0, len(words) - window_size + 1)]
+        if windows and Counter(windows).most_common(1)[0][1] >= 3:
+            return True
+
+    return False
+
+
 def _clean_text(text: str) -> str:
     return re.sub(r"\s+", " ", (text or "").strip())
 
@@ -959,6 +989,8 @@ def transcribe_audio(
     )
     try:
         transcript = _openai_transcribe(api_key, audio_path, model=model, language=language, prompt=prompt)
+        if _is_suspicious_transcript(transcript):
+            raise RuntimeError("Transkript ist offenbar fehlerhaft oder zu stark wiederholt")
         log_entry["response"] = _format_transcription_log(transcript)
         _emit_llm_log(log_entry)
         return transcript

@@ -857,33 +857,28 @@ main {
   min-height: 0;
 }
 
-.desktop-pinboard-scroll {
-  min-width: 0;
-  min-height: 0;
-  background:
-    radial-gradient(circle at top left, rgba(37, 99, 235, 0.05), transparent 24%),
-    radial-gradient(circle at top right, rgba(15, 23, 42, 0.04), transparent 18%),
-    linear-gradient(180deg, rgba(255, 252, 246, 0.98), rgba(248, 242, 231, 0.98));
-}
-
 .desktop-pinboard-surface {
   min-height: 0;
   min-width: 0;
+  padding: 0.2rem 0.1rem 0.25rem;
+  overflow-x: auto;
+  overflow-y: hidden;
 }
 
 .desktop-pin-group-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(18rem, 1fr));
-  gap: 1rem;
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 0.85rem;
   align-items: start;
   align-content: start;
+  min-width: max-content;
 }
 
 .desktop-pin-group-grid .board-column {
   min-width: 0;
   max-width: none;
-  width: auto;
-  flex-basis: auto;
+  width: clamp(17rem, calc((100% - 1.7rem) / 3), 24rem);
+  flex: 0 0 clamp(17rem, calc((100% - 1.7rem) / 3), 24rem);
 }
 
 .desktop-pin-grid {
@@ -916,20 +911,19 @@ main {
   box-shadow: 0 0.65rem 1.3rem rgba(15, 23, 42, 0.08);
 }
 
-.desktop-pinboard-scroll .board-group-empty,
 .desktop-unassigned-rail .board-group-empty {
   background: rgba(15, 23, 42, 0.025);
 }
 
-.desktop-pinboard-scroll .board-column {
+.desktop-pinboard-surface .board-column {
   background: rgba(255, 255, 255, 0.92);
 }
 
-.desktop-pinboard-scroll .board-column-body {
+.desktop-pinboard-surface .board-column-body {
   overflow: visible;
 }
 
-.desktop-pinboard-scroll .board-column .sticky-note-card {
+.desktop-pinboard-surface .board-column .sticky-note-card {
   box-shadow: 0 0.6rem 1.2rem rgba(15, 23, 42, 0.08);
 }
 

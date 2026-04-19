@@ -930,13 +930,22 @@ def retry_transcription(note_id: str, entry_id: str) -> NoteResponse:
     audio_rel = str(entry.get("audioRelativePath", ""))
     if not audio_rel:
         raise HTTPException(status_code=400, detail="Kein Audio fuer diesen Eintrag vorhanden")
-    transcript = transcribe_audio(
-        api_key=api_key,
-        audio_path=store.media_dir / audio_rel,
-        model=transcription_model,
-        language=language,
-        prompt=transcription_prompt,
-    )
+    try:
+        transcript = transcribe_audio(
+            api_key=api_key,
+            audio_path=store.media_dir / audio_rel,
+            model=transcription_model,
+            language=language,
+            prompt=transcription_prompt,
+        )
+    except Exception as error:
+        entry["transcriptionState"] = "pending_retry"
+        entry["transcriptionError"] = str(error)
+        entry["updatedAt"] = utc_now()
+        note["updatedAt"] = utc_now()
+        store.save_note(note)
+        return NoteResponse(note=note_to_model(note, lambda rel: f"/media/{rel}"))
+
     entry["transcript"] = transcript
     entry["transcriptionState"] = "done"
     entry["transcriptionError"] = ""

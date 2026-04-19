@@ -1756,7 +1756,7 @@ function DesktopPinboardView(props: {
   onEditGroup: (group: BoardGroup) => void
 }) {
   const { unassignedGroup, pinboardGroups } = splitDesktopBoardGroups(props.groups)
-  const unassignedNotes = unassignedGroup?.notes ?? []
+  const boardGroups = [unassignedGroup, ...pinboardGroups].filter(Boolean) as BoardGroup[]
   const totalNotes = props.groups.reduce((count, group) => count + group.notes.length, 0)
 
   return (
@@ -1765,19 +1765,13 @@ function DesktopPinboardView(props: {
         <div className="card-body p-3 p-lg-4 d-flex flex-column flex-xxl-row align-items-start align-items-xxl-center justify-content-between gap-3">
           <div className="desktop-top-copy">
             <p className="small text-uppercase text-secondary fw-semibold mb-1">Workspace</p>
-            <h2 className="h3 mb-1">Pinboard für Gruppen</h2>
-            <p className="desktop-subtitle mb-0">
-              Links liegen alle unzugeordneten Notizen, rechts das unbegrenzte Pinboard mit allen Gruppen.
-            </p>
+            <h2 className="h3 mb-1">Gruppen</h2>
+            <p className="desktop-subtitle mb-0">„Nicht zugeordnet“ wird wie jede andere Gruppe als eigene Spalte behandelt.</p>
           </div>
           <div className="d-flex flex-wrap align-items-center justify-content-xxl-end gap-2">
             <span className="badge rounded-pill text-bg-light border text-secondary">
               <i className="bi bi-pin-angle me-1" aria-hidden="true" />
-              {pinboardGroups.length} Gruppen
-            </span>
-            <span className="badge rounded-pill text-bg-light border text-secondary">
-              <i className="bi bi-stickies me-1" aria-hidden="true" />
-              {unassignedNotes.length} frei
+              {boardGroups.length} Gruppen
             </span>
             <span className="badge rounded-pill text-bg-light border text-secondary">{totalNotes} Notizen</span>
             <div className="d-flex flex-wrap justify-content-end gap-2">
@@ -1811,81 +1805,25 @@ function DesktopPinboardView(props: {
           </div>
         </div>
       ) : (
-        <div className="desktop-pinboard-layout flex-grow-1 min-h-0 d-flex gap-3">
-          <aside className="desktop-unassigned-rail card border-0 shadow-sm">
-            <div className="card-body p-3 p-lg-4 d-flex flex-column gap-3 h-100">
-              <div className="d-flex align-items-start justify-content-between gap-2">
-                <div>
-                  <p className="small text-uppercase text-secondary fw-semibold mb-1">Links</p>
-                  <h3 className="h5 mb-1">Nicht zugeordnet</h3>
-                  <p className="board-column-description text-secondary mb-0">
-                    Alle Notizen ohne Gruppe laufen hier vertikal untereinander auf.
-                  </p>
-                </div>
-                <span className="badge rounded-pill text-bg-light border text-secondary">{unassignedNotes.length}</span>
+        <div className="desktop-pinboard-layout flex-grow-1 min-h-0 d-flex gap-0">
+          <div className="desktop-pinboard-surface flex-grow-1 min-w-0 overflow-auto">
+            {boardGroups.length === 0 ? (
+              <div className="alert alert-light border shadow-sm mb-0">Noch keine Gruppen vorhanden. Über „Neu gruppieren“ wird die Fläche automatisch gefüllt.</div>
+            ) : (
+              <div className="desktop-pin-group-grid">
+                {boardGroups.map((group) => (
+                  <BoardGroupView
+                    key={group.key}
+                    group={group}
+                    onOpenNote={props.onOpenNote}
+                    onTogglePlayback={props.onTogglePlayback}
+                    currentlyPlayingId={props.currentlyPlayingId}
+                    selectedNoteId={props.selectedNoteId}
+                    onEditGroup={props.onEditGroup}
+                  />
+                ))}
               </div>
-
-              <div className="desktop-unassigned-list vstack gap-3 flex-grow-1 overflow-auto pe-1">
-                {unassignedNotes.length === 0 ? (
-                  <div className="board-group-empty text-secondary small">Alles ist bereits einer Gruppe zugeordnet.</div>
-                ) : (
-                  unassignedNotes.map((note) => (
-                    <StickyNoteCard
-                      key={note.id}
-                      note={note}
-                      selected={props.selectedNoteId === note.id}
-                      compact
-                      stacked={false}
-                      floating={false}
-                      ghost={false}
-                      onOpen={() => props.onOpenNote(note.id)}
-                      onTogglePlayback={() => {
-                        const audioPath = noteAudioPath(note)
-                        if (audioPath) {
-                          props.onTogglePlayback(note.id, mediaUrl(audioPath))
-                        }
-                      }}
-                      playing={props.currentlyPlayingId === note.id}
-                    />
-                  ))
-                )}
-              </div>
-            </div>
-          </aside>
-
-          <div className="desktop-pinboard-scroll card border-0 shadow-sm flex-grow-1 min-w-0">
-            <div className="card-body p-3 p-lg-4 d-flex flex-column gap-3 h-100">
-              <div className="d-flex align-items-start justify-content-between gap-3 flex-shrink-0">
-                <div>
-                  <p className="small text-uppercase text-secondary fw-semibold mb-1">Rechts</p>
-                  <h3 className="h5 mb-1">Großes Pinboard</h3>
-                  <p className="board-column-description text-secondary mb-0">
-                    Jede Gruppe ist nur noch eine Karte auf der Pinwand; das Board scrollt weiter, wenn mehr Platz gebraucht wird.
-                  </p>
-                </div>
-                <span className="badge rounded-pill text-bg-light border text-secondary">{pinboardGroups.length} Gruppen</span>
-              </div>
-
-              <div className="desktop-pinboard-surface flex-grow-1 min-h-0 overflow-auto">
-                {pinboardGroups.length === 0 ? (
-                  <div className="alert alert-light border shadow-sm mb-0">Noch keine Gruppen vorhanden. Über „Neu gruppieren“ wird das Pinboard automatisch gefüllt.</div>
-                ) : (
-                  <div className="desktop-pin-group-grid">
-                    {pinboardGroups.map((group) => (
-                      <BoardGroupView
-                        key={group.key}
-                        group={group}
-                        onOpenNote={props.onOpenNote}
-                        onTogglePlayback={props.onTogglePlayback}
-                        currentlyPlayingId={props.currentlyPlayingId}
-                        selectedNoteId={props.selectedNoteId}
-                        onEditGroup={props.onEditGroup}
-                      />
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
+            )}
           </div>
         </div>
       )}
