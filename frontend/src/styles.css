@@ -113,6 +113,7 @@ main {
 
 .page-panel-chat {
   overflow: hidden;
+  padding-bottom: 0.25rem;
 }
 
 .app-bottom-nav {
@@ -1576,6 +1577,27 @@ main {
 
 .chat-panel {
   background: rgba(255, 255, 255, 0.9);
+}
+
+.page-panel-chat .chat-view {
+  height: 100%;
+}
+
+.page-panel-chat .chat-panel {
+  display: flex;
+  min-height: 0;
+}
+
+.page-panel-chat .chat-panel .card-body {
+  min-height: 0;
+}
+
+.page-panel-chat .chat-thread {
+  min-height: 0;
+}
+
+.page-panel-chat .chat-composer {
+  margin-top: auto;
 }
 
 .chat-thread {

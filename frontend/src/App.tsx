@@ -1890,7 +1890,7 @@ function ChatView(props: {
   const latestAssistant = [...props.messages].reverse().find((message) => message.role === 'assistant')
 
   return (
-    <section className="chat-view h-100 d-flex flex-column gap-3 min-h-0">
+    <section className="chat-view h-100 d-flex flex-column gap-2 min-h-0">
       <div className="chat-panel card border-0 shadow-sm flex-grow-1">
         <div className="card-body p-3 p-lg-4 d-flex flex-column gap-3 h-100 min-h-0">
           <div className="d-flex flex-wrap align-items-center justify-content-between gap-2">
@@ -1963,7 +1963,7 @@ function ChatView(props: {
             ) : null}
           </div>
 
-          <div className="chat-composer card border-0 shadow-none mb-0">
+          <div className="chat-composer card border-0 shadow-none mb-0 mt-auto">
             <div className="card-body p-0 d-flex flex-column gap-2">
               <label className="small text-secondary fw-semibold" htmlFor="chat-input">
                 Nachricht an deine Notizen
