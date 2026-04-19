@@ -1654,7 +1654,7 @@ export default function App() {
                 />
               </section>
 
-              <section className="page-panel h-100 d-flex flex-column gap-3">
+              <section className="page-panel page-panel-chat h-100 d-flex flex-column gap-3">
                 <ChatView
                   messages={chatMessages}
                   draft={chatDraft}
@@ -1890,17 +1890,7 @@ function ChatView(props: {
   const latestAssistant = [...props.messages].reverse().find((message) => message.role === 'assistant')
 
   return (
-    <section className="chat-view h-100 d-flex flex-column gap-3">
-      <div className="card border-0 shadow-sm chat-hero">
-        <div className="card-body p-3 p-lg-4 d-flex flex-column gap-2">
-          <span className="badge rounded-pill text-bg-light border text-secondary align-self-start">RAG-Chat</span>
-          <h2 className="chat-title mb-0">Mit deinen Notizen sprechen.</h2>
-          <p className="chat-copy text-secondary mb-0">
-            Frag nach Zusammenfassungen, baue Ideen weiter aus oder lass dir direkt neue Notizen und Gruppen anlegen.
-          </p>
-        </div>
-      </div>
-
+    <section className="chat-view h-100 d-flex flex-column gap-3 min-h-0">
       <div className="chat-panel card border-0 shadow-sm flex-grow-1">
         <div className="card-body p-3 p-lg-4 d-flex flex-column gap-3 h-100 min-h-0">
           <div className="d-flex flex-wrap align-items-center justify-content-between gap-2">
