@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type Dispatch, type ReactNode, type SetStateAction } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type Dispatch, type ReactNode, type SetStateAction } from 'react'
 import { api, mediaUrl } from './api'
 import { useVoiceRecorder } from './hooks/useVoiceRecorder'
 import type {
@@ -740,6 +740,45 @@ export default function App() {
   const pageSliderRef = useRef<HTMLDivElement | null>(null)
   const pageScrollFrameRef = useRef<number | null>(null)
   const recorder = useVoiceRecorder()
+
+  useLayoutEffect(() => {
+    const syncChatHeight = () => {
+      const panel = pageSliderRef.current?.querySelector<HTMLElement>('.page-panel-chat')
+      const chatView = pageSliderRef.current?.querySelector<HTMLElement>('.page-panel-chat .chat-view')
+      const chatPanel = pageSliderRef.current?.querySelector<HTMLElement>('.page-panel-chat .chat-panel')
+      const chatCardBody = pageSliderRef.current?.querySelector<HTMLElement>('.page-panel-chat .chat-panel .card-body')
+      const header = document.querySelector<HTMLElement>('header.app-header')
+      const bottomNav = document.querySelector<HTMLElement>('.app-bottom-nav')
+      if (!panel || !chatView || !chatPanel || !chatCardBody || !header || !bottomNav) {
+        return
+      }
+
+      const availableHeight = Math.max(bottomNav.getBoundingClientRect().top - header.getBoundingClientRect().bottom - 8, 0)
+      const nextHeight = `${Math.round(availableHeight)}px`
+      panel.style.height = nextHeight
+      chatView.style.height = nextHeight
+      chatPanel.style.height = nextHeight
+      chatCardBody.style.height = nextHeight
+    }
+
+    syncChatHeight()
+
+    const header = document.querySelector<HTMLElement>('header.app-header')
+    const bottomNav = document.querySelector<HTMLElement>('.app-bottom-nav')
+    const resizeObserver = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(syncChatHeight) : null
+    if (header && resizeObserver) {
+      resizeObserver.observe(header)
+    }
+    if (bottomNav && resizeObserver) {
+      resizeObserver.observe(bottomNav)
+    }
+    window.addEventListener('resize', syncChatHeight)
+
+    return () => {
+      resizeObserver?.disconnect()
+      window.removeEventListener('resize', syncChatHeight)
+    }
+  }, [])
 
   const isAppHistoryState = (value: unknown): value is AppHistoryState => {
     if (!value || typeof value !== 'object') {
@@ -1610,11 +1649,11 @@ export default function App() {
 
   return (
     <div className="bootstrap-app text-body">
-      <div className="container-fluid app-shell py-2 py-lg-3 d-flex flex-column gap-2">
+      <div className="container-fluid app-shell py-1 py-lg-2 d-flex flex-column gap-1">
         <header className="app-header d-flex align-items-start align-items-lg-center justify-content-between gap-3">
-          <div>
+          <div className="app-brand-wrap d-flex flex-column flex-sm-row align-items-start align-items-sm-baseline gap-1 gap-sm-2">
             <div className="app-brand">BrainSession</div>
-            <div className="app-subtitle">Dein externer RAM für Sprachideen und Post-its.</div>
+            <div className="app-subtitle d-none d-sm-inline">Dein externer RAM für Sprachideen und Post-its.</div>
           </div>
           <div className="d-flex align-items-center gap-2">
             <span className="badge rounded-pill text-bg-light border text-secondary d-none d-sm-inline-flex">
@@ -1654,7 +1693,7 @@ export default function App() {
                 />
               </section>
 
-              <section className="page-panel page-panel-chat h-100 d-flex flex-column gap-3">
+              <section className="page-panel page-panel-chat h-100">
                 <ChatView
                   messages={chatMessages}
                   draft={chatDraft}
@@ -1711,12 +1750,12 @@ export default function App() {
         </main>
 
         <nav className="navbar navbar-expand fixed-bottom border-top bg-white shadow-sm app-bottom-nav" aria-label="Seitennavigation">
-          <div className="container-fluid px-3 px-lg-4 py-2">
-            <div className="nav nav-pills w-100 justify-content-between justify-content-md-center gap-2 app-bottom-nav-pills" role="tablist" aria-label="App-Seiten">
+          <div className="container-fluid px-3 px-lg-4 py-1">
+            <div className="nav nav-pills w-100 justify-content-between justify-content-md-center gap-1 app-bottom-nav-pills" role="tablist" aria-label="App-Seiten">
               {tabs.map((tab) => (
                 <button
                   key={tab.key}
-                  className={`nav-link btn btn-sm rounded-pill px-3 px-md-4 py-2 ${activeTab === tab.key ? 'active' : ''}`}
+                  className={`nav-link btn btn-sm rounded-pill px-3 px-md-4 py-1 ${activeTab === tab.key ? 'active' : ''}`}
                   onClick={() => activateTab(tab.key)}
                   type="button"
                   role="tab"
@@ -1888,25 +1927,40 @@ function ChatView(props: {
   onClear: () => void
 }) {
   const latestAssistant = [...props.messages].reverse().find((message) => message.role === 'assistant')
+  const chatInputRef = useRef<HTMLTextAreaElement | null>(null)
+
+  useLayoutEffect(() => {
+    const element = chatInputRef.current
+    if (!element) {
+      return
+    }
+
+    element.style.height = '0px'
+    const nextHeight = Math.min(element.scrollHeight, 176)
+    element.style.height = `${Math.max(nextHeight, 44)}px`
+  }, [props.draft])
 
   return (
     <section className="chat-view h-100 d-flex flex-column gap-2 min-h-0">
       <div className="chat-panel card border-0 shadow-sm flex-grow-1">
-        <div className="card-body p-3 p-lg-4 d-flex flex-column gap-3 h-100 min-h-0">
-          <div className="d-flex flex-wrap align-items-center justify-content-between gap-2">
-            <div className="d-flex flex-wrap gap-2">
-              <span className="badge rounded-pill text-bg-light border text-secondary">{props.noteCount} Notizen im Speicher</span>
-              <span className="badge rounded-pill text-bg-light border text-secondary">OpenAI Chat</span>
+        <div className="card-body p-2 p-lg-3 d-flex flex-column gap-2 h-100 min-h-0">
+          <div className="chat-toolbar d-flex align-items-center justify-content-between gap-2">
+            <div className="chat-status-line d-flex flex-wrap align-items-center gap-2">
+              <span className="chat-status-pill">{props.noteCount} Notizen</span>
+              <span className="chat-status-separator" aria-hidden="true">
+                •
+              </span>
+              <span className="chat-status-label">OpenAI Chat</span>
             </div>
-            <button className="btn btn-outline-secondary btn-sm" type="button" onClick={props.onClear} disabled={props.loading}>
-              <i className="bi bi-arrow-counterclockwise me-1" aria-hidden="true" />
-              Neu starten
+            <button className="btn btn-outline-secondary btn-sm chat-reset-btn" type="button" onClick={props.onClear} disabled={props.loading} aria-label="Chat neu starten">
+              <i className="bi bi-arrow-counterclockwise" aria-hidden="true" />
+              <span className="d-none d-sm-inline ms-1">Neu starten</span>
             </button>
           </div>
 
           {props.error ? <div className="alert alert-warning mb-0 py-2">{props.error}</div> : null}
 
-          <div className="chat-thread flex-grow-1 overflow-auto pe-1">
+          <div className="chat-thread flex-grow-1 overflow-auto pe-0">
             {props.messages.map((message) => (
               <div key={message.id} className={`chat-row chat-row-${message.role}`}>
                 <div className={`chat-bubble chat-bubble-${message.role}`}>
@@ -1965,26 +2019,25 @@ function ChatView(props: {
 
           <div className="chat-composer card border-0 shadow-none mb-0 mt-auto">
             <div className="card-body p-0 d-flex flex-column gap-2">
-              <label className="small text-secondary fw-semibold" htmlFor="chat-input">
-                Nachricht an deine Notizen
-              </label>
-              <textarea
-                id="chat-input"
-                className="form-control chat-input"
-                rows={4}
-                value={props.draft}
-                onChange={(event) => props.onDraftChange(event.target.value)}
-                placeholder="Frag nach Zusammenfassungen, Ideen oder neuen Gruppen …"
-                disabled={props.loading}
-              />
-              <div className="d-flex flex-wrap gap-2">
-                <button className="btn btn-primary flex-grow-1" type="button" onClick={props.onSend} disabled={props.loading || !props.draft.trim()}>
-                  <i className={`bi ${props.loading ? 'bi-hourglass-split' : 'bi-send-fill'} me-2`} aria-hidden="true" />
-                  {props.loading ? 'Sende …' : 'Senden'}
-                </button>
-                <button className="btn btn-outline-secondary" type="button" onClick={() => props.onDraftChange('')} disabled={props.loading || !props.draft.trim()}>
-                  Leeren
-                </button>
+              <div className="chat-composer-row d-flex align-items-end gap-2">
+                <textarea
+                  id="chat-input"
+                  ref={chatInputRef}
+                  className="form-control chat-input"
+                  rows={1}
+                  value={props.draft}
+                  onChange={(event) => props.onDraftChange(event.target.value)}
+                  placeholder="Frag nach Zusammenfassungen, Ideen oder neuen Gruppen …"
+                  disabled={props.loading}
+                />
+                <div className="chat-composer-actions d-flex align-items-center gap-2">
+                  <button className="btn btn-primary chat-icon-btn" type="button" onClick={props.onSend} disabled={props.loading || !props.draft.trim()} aria-label={props.loading ? 'Sende Nachricht' : 'Nachricht senden'}>
+                    <i className={`bi ${props.loading ? 'bi-hourglass-split' : 'bi-send-fill'}`} aria-hidden="true" />
+                  </button>
+                  <button className="btn btn-outline-secondary chat-icon-btn" type="button" onClick={() => props.onDraftChange('')} disabled={props.loading || !props.draft.trim()} aria-label="Eingabe leeren">
+                    <i className="bi bi-trash3" aria-hidden="true" />
+                  </button>
+                </div>
               </div>
             </div>
           </div>
