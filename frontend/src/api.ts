@@ -19,14 +19,19 @@ function url(path: string): string {
 }
 
 async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(url(path), {
-    headers: {
-      Accept: 'application/json',
-      ...(init?.body instanceof FormData ? {} : { 'Content-Type': 'application/json' }),
-      ...(init?.headers ?? {}),
-    },
-    ...init,
-  })
+  let response: Response
+  try {
+    response = await fetch(url(path), {
+      headers: {
+        Accept: 'application/json',
+        ...(init?.body instanceof FormData ? {} : { 'Content-Type': 'application/json' }),
+        ...(init?.headers ?? {}),
+      },
+      ...init,
+    })
+  } catch {
+    throw new Error('Der Server ist gerade nicht erreichbar oder hat zu lange gebraucht. Bitte versuche es noch einmal.')
+  }
 
   if (!response.ok) {
     const fallback = `${response.status} ${response.statusText}`

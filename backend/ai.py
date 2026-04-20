@@ -418,7 +418,7 @@ def _openai_responses(api_key: str, payload: dict[str, Any]) -> dict[str, Any]:
         "https://api.openai.com/v1/responses",
         headers=_openai_headers(api_key),
         json=payload,
-        timeout=180,
+        timeout=60,
     )
     response.raise_for_status()
     return response.json()
