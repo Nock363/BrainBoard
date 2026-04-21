@@ -1266,9 +1266,11 @@ def transcribe_audio(
     )
     try:
         transcript = _openai_transcribe(api_key, audio_path, model=model, language=language, prompt=prompt)
-        if _is_suspicious_transcript(transcript):
-            raise RuntimeError("Transkript ist offenbar fehlerhaft oder zu stark wiederholt")
+        if not _clean_text(transcript):
+            raise RuntimeError("OpenAI Whisper hat kein Transkript geliefert")
         log_entry["response"] = _format_transcription_log(transcript)
+        if _is_suspicious_transcript(transcript):
+            log_entry["warning"] = "Transkript wirkt wiederholt, wurde aber trotzdem übernommen."
         _emit_llm_log(log_entry)
         return transcript
     except Exception:
