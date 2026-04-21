@@ -186,3 +186,6 @@ class ChatResponse(BaseModel):
     reply: str
     actions: list[ChatAction] = Field(default_factory=list)
     references: list[ChatReference] = Field(default_factory=list)
+    transcript: str = ""
+    inputAudioRelativePath: str = ""
+    replyAudioRelativePath: str = ""

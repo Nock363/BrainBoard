@@ -25,6 +25,7 @@ from backend.ai import (
     set_llm_logger,
     summarize_note_timeline,
     transcribe_audio,
+    synthesize_chat_reply_audio,
     DEFAULT_CATEGORY_PROMPT_PREFIX,
     DEFAULT_GROUP_PROMPT_PREFIX,
     DEFAULT_TRANSCRIPTION_PROMPT,
@@ -690,6 +691,69 @@ def chat(payload: ChatRequest) -> ChatResponse:
             reply = f"Ich habe {' und '.join(prefix_bits)}. {reply}".strip()
 
     return ChatResponse(reply=reply, actions=actions, references=result.get("references", []))
+
+
+@app.post("/api/chat/voice", response_model=ChatResponse)
+async def chat_voice(
+    audio: UploadFile = File(...),
+    messages: str = Form(default="[]"),
+) -> ChatResponse:
+    current_settings = {**default_settings(config), **store.load_settings()}
+    api_key = str(current_settings.get("openAiApiKey") or config.openai_api_key or "")
+    chat_model = str(current_settings.get("chatModel") or config.chat_model)
+    transcription_model = str(current_settings.get("transcriptionModel") or config.transcription_model)
+    transcription_prompt = transcription_prompt_from(current_settings)
+    language = str(current_settings.get("language") or config.language)
+    if not api_key:
+        raise HTTPException(status_code=400, detail="OpenAI API key fehlt")
+
+    try:
+        payload_messages = ChatRequest.model_validate({"messages": json.loads(messages) if messages.strip() else []}).messages
+    except Exception:
+        raise HTTPException(status_code=400, detail="Chat-Verlauf ist ungültig")
+
+    audio_bytes = await audio.read()
+    if not audio_bytes:
+        raise HTTPException(status_code=400, detail="Audio Datei ist leer")
+
+    transcript_path = store.write_generated_audio_file("chat-receipts", f"input-{uuid4().hex[:12]}", audio_bytes, Path(audio.filename or "voice.webm").suffix or ".webm")
+    try:
+        transcript = transcribe_audio(
+            api_key=api_key,
+            audio_path=store.media_dir / transcript_path,
+            model=transcription_model,
+            language=language,
+            prompt=transcription_prompt,
+        )
+    except Exception as error:
+        raise HTTPException(status_code=502, detail=f"Sprachnachricht konnte nicht transkribiert werden: {error}")
+
+    augmented_messages = [*payload_messages, {"role": "user", "content": transcript}]
+    relevant_notes = rank_notes_for_query(store.list_notes(), transcript)
+    result = generate_chat_response(api_key, chat_model, augmented_messages, relevant_notes, speech_mode=True)
+    reply = clean_text_value(result.get("reply"))
+
+    reply_audio_relative_path = ""
+    if reply:
+        try:
+            audio_blob = synthesize_chat_reply_audio(api_key, reply)
+            reply_audio_relative_path = store.write_generated_audio_file(
+                "chat-replies",
+                f"reply-{uuid4().hex[:12]}",
+                audio_blob,
+                ".mp3",
+            )
+        except Exception:
+            reply_audio_relative_path = ""
+
+    return ChatResponse(
+        reply=reply,
+        actions=list(result.get("actions", [])),
+        references=list(result.get("references", [])),
+        transcript=transcript,
+        inputAudioRelativePath=transcript_path,
+        replyAudioRelativePath=reply_audio_relative_path,
+    )
 
 
 @app.get("/api/notes/{note_id}", response_model=NoteResponse)

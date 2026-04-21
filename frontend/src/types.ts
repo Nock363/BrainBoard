@@ -137,4 +137,7 @@ export interface ChatResponse {
   reply: string
   actions: ChatAction[]
   references: ChatReference[]
+  transcript: string
+  inputAudioRelativePath: string
+  replyAudioRelativePath: string
 }

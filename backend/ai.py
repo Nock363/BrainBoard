@@ -365,6 +365,32 @@ def _summary_prompt_from_prefix(prompt_prefix: str, input_label: str, content: s
             "content": f"{clean_prefix}\n\n{input_label}:\n{clean_content}",
         },
     ]
+
+
+def _chat_system_prompt(speech_mode: bool = False) -> str:
+    base_prompt = (
+        "Du bist der BrainSession-Chatbot und arbeitest auf Deutsch. "
+        "Du hast Zugriff auf Notizen, die wie ein RAG-System bereitgestellt werden. "
+        "Nutze diese Notizen als primären Kontext, baue auf ihnen auf und antworte knapp, konkret und hilfreich. "
+        "Wenn die Notizen nicht reichen, stelle eine kurze Rueckfrage statt etwas zu erfinden. "
+        "Neue Notizen oder Gruppen darfst du nur anlegen, wenn der Nutzer das ausdrücklich verlangt. "
+        "Bei normalen Fragen, Zusammenfassungen oder Tests musst du actions leer lassen. "
+        "Gib niemals rohe JSON-Objekte im Antworttext aus. "
+        "Antworte nur als JSON mit reply, references und actions."
+    )
+    if speech_mode:
+        return (
+            base_prompt
+            + " Schreibe die reply als ruhigen, fließenden Vorlesetext ohne Markdown, ohne Listen, ohne Emojis und ohne harte Zeilenumbrüche. "
+            + "Nutze kurze Absätze, maximal drei kurze Sätze oder zwei sehr kurze Absätze, und formuliere so, dass es sich beim Vorlesen natürlich anhört."
+        )
+    return (
+        base_prompt
+        + " Die reply darf Markdown verwenden: Absätze, Aufzählungen, nummerierte Listen, Fettung und kurze Code-Einschübe. "
+        + "Wenn du Listen ausgibst, schreibe jeden Punkt in eine eigene Zeile."
+    )
+
+
 def _openai_headers(api_key: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {api_key.strip()}", "Content-Type": "application/json"}
 
@@ -451,6 +477,31 @@ def _openai_transcribe(
     if not text:
         raise RuntimeError("OpenAI Whisper hat kein Transkript geliefert")
     return text
+
+
+def _openai_speech(api_key: str, text: str, model: str, voice: str = "alloy") -> bytes:
+    response = requests.post(
+        "https://api.openai.com/v1/audio/speech",
+        headers=_openai_headers(api_key),
+        json={
+            "model": model.strip() or "gpt-4o-mini-tts",
+            "input": text,
+            "voice": voice,
+            "response_format": "mp3",
+        },
+        timeout=180,
+    )
+    response.raise_for_status()
+    if not response.content:
+        raise RuntimeError("OpenAI Speech hat keine Audiodaten geliefert")
+    return response.content
+
+
+def synthesize_chat_reply_audio(api_key: str, text: str, model: str = "gpt-4o-mini-tts", voice: str = "alloy") -> bytes:
+    clean_text = _clean_text(text)
+    if not clean_text:
+        raise ValueError("Vorlesetext ist leer")
+    return _openai_speech(api_key, clean_text, model=model, voice=voice)
 
 
 def _build_summary_schema() -> dict[str, Any]:
@@ -1087,6 +1138,8 @@ def generate_chat_response(
     model: str,
     messages: list[dict[str, Any]],
     relevant_notes: list[dict[str, Any]],
+    *,
+    speech_mode: bool = False,
 ) -> dict[str, Any]:
     clean_key = api_key.strip()
     normalized_messages = _normalize_messages(messages)
@@ -1096,21 +1149,14 @@ def generate_chat_response(
     note_payload = [_chat_note_payload(note) for note in relevant_notes if _clean_text(str(note.get("id", "")))]
     conversation_blob = _chat_message_blob(normalized_messages)
     payload = {
-        "model": model.strip() or "gpt-5-mini",
+        "model": model.strip() or "gpt-5.4-nano",
         "input": [
             {
                 "role": "system",
                 "content": (
-                    "Du bist der BrainSession-Chatbot und arbeitest auf Deutsch. "
-                    "Du hast Zugriff auf Notizen, die wie ein RAG-System bereitgestellt werden. "
-                    "Nutze diese Notizen als primären Kontext, baue auf ihnen auf und antworte knapp, konkret und hilfreich. "
-                    "Wenn die Notizen nicht reichen, stelle eine kurze Rueckfrage statt etwas zu erfinden. "
-                    "Neue Notizen oder Gruppen darfst du nur anlegen, wenn der Nutzer das ausdrücklich verlangt. "
-                    "Bei normalen Fragen, Zusammenfassungen oder Tests musst du actions leer lassen. "
-                    "Die reply darf Markdown verwenden: Absätze, Aufzählungen, nummerierte Listen, Fettung und kurze Code-Einschübe. "
-                    "Wenn du Listen ausgibst, schreibe jeden Punkt in eine eigene Zeile. "
+                    _chat_system_prompt(speech_mode=speech_mode)
+                    + " "
                     "Wenn du dich auf konkrete Notizen beziehst, gib ihre IDs und eine kurze Begründung in references aus. "
-                    "Gib niemals rohe JSON-Objekte im Antworttext aus. "
                     "Antworte nur als JSON mit reply, references und actions."
                 ),
             },

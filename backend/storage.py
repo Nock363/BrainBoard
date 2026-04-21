@@ -198,3 +198,11 @@ class BrainSessionStore:
         file_path = target_dir / f"{entry_id}{clean_suffix}"
         file_path.write_bytes(blob)
         return str(file_path.relative_to(self.media_dir)).replace("\\", "/")
+
+    def write_generated_audio_file(self, folder_name: str, file_stem: str, blob: bytes, suffix: str) -> str:
+        clean_suffix = suffix if suffix.startswith(".") else f".{suffix}"
+        target_dir = self.media_dir / folder_name
+        target_dir.mkdir(parents=True, exist_ok=True)
+        file_path = target_dir / f"{file_stem}{clean_suffix}"
+        file_path.write_bytes(blob)
+        return str(file_path.relative_to(self.media_dir)).replace("\\", "/")

@@ -47,6 +47,8 @@ type ChatThreadMessage = ChatApiMessage & {
   createdAt: string
   actions?: ChatAction[]
   references?: ChatReference[]
+  audioRelativePath?: string
+  replyAudioRelativePath?: string
   pending?: boolean
 }
 
@@ -673,6 +675,13 @@ function loadStoredChatMessages(): ChatThreadMessage[] {
         createdAt: typeof message?.createdAt === 'string' ? message.createdAt : new Date().toISOString(),
         actions: Array.isArray(message?.actions) ? message.actions : [],
         references: Array.isArray(message?.references) ? message.references : [],
+        audioRelativePath:
+          typeof message?.audioRelativePath === 'string' && message.audioRelativePath.trim()
+            ? message.audioRelativePath
+            : typeof message?.replyAudioRelativePath === 'string' && message.replyAudioRelativePath.trim()
+              ? message.replyAudioRelativePath
+              : '',
+        replyAudioRelativePath: typeof message?.replyAudioRelativePath === 'string' ? message.replyAudioRelativePath : '',
       }))
       .filter((message) => message.content.trim())
     return messages.length > 0 ? messages : [createChatGreeting()]
@@ -740,6 +749,7 @@ export default function App() {
   const pageSliderRef = useRef<HTMLDivElement | null>(null)
   const pageScrollFrameRef = useRef<number | null>(null)
   const recorder = useVoiceRecorder()
+  const chatRecorder = useVoiceRecorder()
 
   useLayoutEffect(() => {
     const syncChatHeight = () => {
@@ -1044,6 +1054,13 @@ export default function App() {
   }, [recorder.error])
 
   useEffect(() => {
+    if (!chatRecorder.error) {
+      return
+    }
+    setChatError(chatRecorder.error)
+  }, [chatRecorder.error])
+
+  useEffect(() => {
     if (!audioRef.current) {
       audioRef.current = new Audio()
       audioRef.current.addEventListener('ended', () => setPlayingId(''))
@@ -1201,12 +1218,76 @@ export default function App() {
         references: response.references,
       }
 
-      setChatMessages([...nextMessages, assistantMessage])
+      setChatMessages((currentMessages) => [...currentMessages, assistantMessage])
       await reloadNotes()
     } catch (chatSendError) {
       setChatError(chatSendError instanceof Error ? chatSendError.message : 'Die Chat-Antwort konnte nicht geladen werden.')
     } finally {
       setChatLoading(false)
+    }
+  }
+
+  const sendVoiceChatMessage = async () => {
+    if (chatLoading || busy) {
+      return
+    }
+    const recorded = await chatRecorder.stopRecording()
+    if (!recorded) {
+      return
+    }
+
+    setChatError('')
+    setChatLoading(true)
+    try {
+      const response = await runBusy('Sprachnachricht wird verarbeitet …', async () =>
+        api.chatVoice(
+          recorded.blob,
+          recorded.mimeType,
+          chatMessages.map((message) => ({
+            role: message.role,
+            content: message.content,
+          })),
+        ),
+      )
+
+      const userMessage: ChatThreadMessage = {
+        id: makeChatMessageId(),
+        role: 'user',
+        content: response.transcript || 'Sprachnachricht',
+        createdAt: new Date().toISOString(),
+        audioRelativePath: response.inputAudioRelativePath,
+      }
+      const assistantMessage: ChatThreadMessage = {
+        id: makeChatMessageId(),
+        role: 'assistant',
+        content: response.reply,
+        createdAt: new Date().toISOString(),
+        actions: response.actions,
+        references: response.references,
+        audioRelativePath: response.replyAudioRelativePath,
+        replyAudioRelativePath: response.replyAudioRelativePath,
+      }
+
+      setChatMessages((currentMessages) => [...currentMessages, userMessage, assistantMessage])
+    } catch (voiceChatError) {
+      setChatError(voiceChatError instanceof Error ? voiceChatError.message : 'Die Sprachnachricht konnte nicht verarbeitet werden.')
+    } finally {
+      setChatLoading(false)
+    }
+  }
+
+  const toggleVoiceChatRecording = async () => {
+    if (chatLoading || busy) {
+      return
+    }
+    if (chatRecorder.isRecording) {
+      await sendVoiceChatMessage()
+      return
+    }
+    try {
+      await chatRecorder.startRecording()
+    } catch (error) {
+      setChatError(error instanceof Error ? error.message : 'Die Aufnahme konnte nicht gestartet werden.')
     }
   }
 
@@ -1474,10 +1555,14 @@ export default function App() {
                         draft={chatDraft}
                         loading={chatLoading}
                         error={chatError}
+                        voiceRecording={chatRecorder.isRecording}
+                        currentlyPlayingId={playingId}
                         noteCount={noteCount}
                         onOpenNote={openNoteDetail}
                         onDraftChange={setChatDraft}
                         onSend={() => void sendChatMessage()}
+                        onToggleVoice={() => void toggleVoiceChatRecording()}
+                        onTogglePlayback={(id, url) => void playAudio(id, url)}
                         onClear={() => {
                           setChatMessages([createChatGreeting()])
                           setChatDraft('')
@@ -1699,10 +1784,14 @@ export default function App() {
                   draft={chatDraft}
                   loading={chatLoading}
                   error={chatError}
+                  voiceRecording={chatRecorder.isRecording}
+                  currentlyPlayingId={playingId}
                   noteCount={noteCount}
                   onOpenNote={openNoteDetail}
                   onDraftChange={setChatDraft}
                   onSend={() => void sendChatMessage()}
+                  onToggleVoice={() => void toggleVoiceChatRecording()}
+                  onTogglePlayback={(id, url) => void playAudio(id, url)}
                   onClear={() => {
                     setChatMessages([createChatGreeting()])
                     setChatDraft('')
@@ -1920,10 +2009,14 @@ function ChatView(props: {
   draft: string
   loading: boolean
   error: string
+  voiceRecording: boolean
+  currentlyPlayingId: string
   noteCount: number
   onOpenNote: (noteId: string) => void
   onDraftChange: (value: string) => void
   onSend: () => void
+  onToggleVoice: () => void
+  onTogglePlayback: (noteId: string, url: string) => void
   onClear: () => void
 }) {
   const latestAssistant = [...props.messages].reverse().find((message) => message.role === 'assistant')
@@ -1963,12 +2056,23 @@ function ChatView(props: {
           <div className="chat-thread flex-grow-1 overflow-auto pe-0">
             {props.messages.map((message) => (
               <div key={message.id} className={`chat-row chat-row-${message.role}`}>
-                <div className={`chat-bubble chat-bubble-${message.role}`}>
+                <div className={`chat-bubble chat-bubble-${message.role} ${message.audioRelativePath || message.replyAudioRelativePath ? 'chat-bubble-voice' : ''}`}>
                   <div className="chat-meta d-flex align-items-center justify-content-between gap-2 mb-1">
                     <span className="fw-semibold">{message.role === 'assistant' ? 'BrainSession' : 'Du'}</span>
                     <span className="small text-secondary">{formatRelativeDate(message.createdAt)}</span>
                   </div>
-                  <div className="chat-message-text">{renderChatMessageBlocks(message.content)}</div>
+                  {message.audioRelativePath || message.replyAudioRelativePath ? (
+                    <VoiceChatBubble
+                      transcript={message.content}
+                      audioUrl={mediaUrl(message.audioRelativePath || message.replyAudioRelativePath || '')}
+                      isPlaying={props.currentlyPlayingId === message.id}
+                      label={message.role === 'assistant' ? 'Sprachantwort' : 'Sprachnachricht'}
+                      isOutgoing={message.role === 'user'}
+                      onToggle={() => props.onTogglePlayback(message.id, mediaUrl(message.audioRelativePath || message.replyAudioRelativePath || ''))}
+                    />
+                  ) : (
+                    <div className="chat-message-text">{renderChatMessageBlocks(message.content)}</div>
+                  )}
                   {message.actions && message.actions.length > 0 ? (
                     <div className="chat-action-list d-flex flex-wrap gap-2 mt-3">
                       {message.actions.map((action, index) => (
@@ -2031,6 +2135,15 @@ function ChatView(props: {
                   disabled={props.loading}
                 />
                 <div className="chat-composer-actions d-flex align-items-center gap-2">
+                  <button
+                    className={`btn ${props.loading ? 'btn-outline-secondary' : props.voiceRecording ? 'btn-danger' : 'btn-outline-primary'} chat-icon-btn`}
+                    type="button"
+                    onClick={() => void props.onToggleVoice()}
+                    disabled={props.loading}
+                    aria-label={props.loading ? 'Sprachnachricht wird verarbeitet' : props.voiceRecording ? 'Sprachnachricht stoppen' : 'Sprachnachricht aufnehmen'}
+                  >
+                    <i className={`bi ${props.loading ? 'bi-hourglass-split' : chatRecorderIcon(props.voiceRecording)}`} aria-hidden="true" />
+                  </button>
                   <button className="btn btn-primary chat-icon-btn" type="button" onClick={props.onSend} disabled={props.loading || !props.draft.trim()} aria-label={props.loading ? 'Sende Nachricht' : 'Nachricht senden'}>
                     <i className={`bi ${props.loading ? 'bi-hourglass-split' : 'bi-send-fill'}`} aria-hidden="true" />
                   </button>
@@ -2044,6 +2157,43 @@ function ChatView(props: {
         </div>
       </div>
     </section>
+  )
+}
+
+function chatRecorderIcon(isRecording: boolean): string {
+  return isRecording ? 'bi-stop-fill' : 'bi-mic-fill'
+}
+
+function VoiceChatBubble(props: {
+  transcript: string
+  audioUrl: string
+  isPlaying: boolean
+  label: string
+  isOutgoing: boolean
+  onToggle: () => void
+}) {
+  const bars = [10, 15, 8, 18, 12, 16, 9]
+  return (
+    <div className={`chat-voice-card ${props.isOutgoing ? 'chat-voice-card-outgoing' : 'chat-voice-card-incoming'} ${props.isPlaying ? 'is-playing' : ''}`}>
+      <div className="chat-voice-transcript">{renderChatMessageBlocks(props.transcript)}</div>
+      <div className="chat-voice-player d-flex align-items-center gap-2">
+        <button
+          className="chat-voice-play btn btn-sm rounded-circle"
+          type="button"
+          onClick={props.onToggle}
+          aria-label={`${props.isPlaying ? 'Pause' : 'Abspielen'}: ${props.label}`}
+          disabled={!props.audioUrl}
+        >
+          <i className={`bi ${props.isPlaying ? 'bi-pause-fill' : 'bi-play-fill'}`} aria-hidden="true" />
+        </button>
+        <div className="chat-voice-waveform" aria-hidden="true">
+          {bars.map((height, index) => (
+            <span key={`${props.label}-${index}`} className="chat-voice-wave" style={{ ['--wave-height' as string]: `${height}%` }} />
+          ))}
+        </div>
+        <span className="chat-voice-label">{props.label}</span>
+      </div>
+    </div>
   )
 }
 

@@ -198,6 +198,16 @@ export const api = {
       body: JSON.stringify(payload),
     })
   },
+  async chatVoice(blob: Blob, mimeType: string, messages: ChatRequest['messages']): Promise<ChatResponse> {
+    const form = new FormData()
+    const extension = mimeType.includes('mp4') ? 'm4a' : mimeType.includes('webm') ? 'webm' : mimeType.includes('wav') ? 'wav' : 'dat'
+    form.append('audio', new File([blob], `voice.${extension}`, { type: mimeType || blob.type || 'audio/webm' }))
+    form.append('messages', JSON.stringify(messages))
+    return requestJson('/api/chat/voice', {
+      method: 'POST',
+      body: form,
+    })
+  },
 }
 
 export function mediaUrl(relativePath: string): string {
