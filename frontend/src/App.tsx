@@ -578,6 +578,25 @@ function downloadMarkdown(fileName: string, markdown: string) {
   window.setTimeout(() => URL.revokeObjectURL(link.href), 1500)
 }
 
+function downloadAudioFile(relativePath: string, fallbackName: string) {
+  if (!relativePath.trim()) {
+    return
+  }
+  const safeBase = fallbackName
+    .trim()
+    .replace(/[^a-zA-Z0-9äöüÄÖÜß._-]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+  const extension = relativePath.split('.').pop()?.trim() || 'mp3'
+  const fileName = `${safeBase || 'brainsession_notiz'}.${extension}`
+  const link = document.createElement('a')
+  link.href = mediaUrl(relativePath)
+  link.download = fileName
+  link.rel = 'noopener'
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+}
+
 function noteAudioPath(note: NoteNode): string {
   const entries = Array.isArray(note.entries) ? note.entries : []
   return note.audioRelativePath || entries.find((entry) => entry.audioRelativePath)?.audioRelativePath || ''
@@ -2889,6 +2908,22 @@ function StickyNoteCard(props: {
               <i className="bi bi-file-text me-1" aria-hidden="true" />
               Transkript
             </button>
+
+            <button
+              className="btn btn-sm btn-outline-light flex-grow-1 sticky-note-action-button"
+              onClick={(event) => {
+                event.stopPropagation()
+                if (hasAudio) {
+                  downloadAudioFile(noteAudioPath(props.note), `${noteTitle(props.note)}_audio`)
+                }
+              }}
+              type="button"
+              disabled={!hasAudio}
+              aria-label={hasAudio ? 'Audio herunterladen' : 'Keine Audio verfügbar'}
+            >
+              <i className="bi bi-download me-1" aria-hidden="true" />
+              Download
+            </button>
           </div>
 
           {props.onOpenDetail ? (
@@ -2963,15 +2998,26 @@ function NoteDetailPage(props: {
         </article>
 
         <div className="detail-audio-block">
-          <button
-            className="btn btn-light detail-action-btn"
-            onClick={() => props.onTogglePlayback(note.id, mediaUrl(audioPath))}
-            type="button"
-            disabled={!hasAudio}
-          >
-            <i className={`bi ${hasAudio ? 'bi-play-fill' : 'bi-mic-mute-fill'} me-1`} aria-hidden="true" />
-            {hasAudio ? 'Audio abspielen' : 'Keine Audioaufnahme'}
-          </button>
+          <div className="d-flex flex-wrap gap-2">
+            <button
+              className="btn btn-light detail-action-btn"
+              onClick={() => props.onTogglePlayback(note.id, mediaUrl(audioPath))}
+              type="button"
+              disabled={!hasAudio}
+            >
+              <i className={`bi ${hasAudio ? 'bi-play-fill' : 'bi-mic-mute-fill'} me-1`} aria-hidden="true" />
+              {hasAudio ? 'Audio abspielen' : 'Keine Audioaufnahme'}
+            </button>
+            <button
+              className="btn btn-light detail-action-btn"
+              onClick={() => downloadAudioFile(audioPath, `${noteTitle(note)}_audio`)}
+              type="button"
+              disabled={!hasAudio}
+            >
+              <i className="bi bi-download me-1" aria-hidden="true" />
+              Audio herunterladen
+            </button>
+          </div>
         </div>
 
         {note.rawTranscript ? (
